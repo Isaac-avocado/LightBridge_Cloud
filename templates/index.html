@@ -55,6 +55,20 @@
   #page-sim { grid-template-columns:1fr 288px; gap:14px; min-height:calc(100vh - 50px); align-items:start; }
   .sim-main { display:flex; flex-direction:column; gap:14px; }
   .sim-side { display:flex; flex-direction:column; gap:14px; }
+  
+  /* HISTORY PAGE (NEW) */
+  #page-history { display:none; }
+  #page-history.active { display:flex; min-height:calc(100vh - 50px); }
+  .table-wrap { overflow-y:auto; max-height:calc(100vh - 140px); background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); padding:0; }
+  .table-wrap::-webkit-scrollbar { width:6px; }
+  .table-wrap::-webkit-scrollbar-thumb { background:var(--border2); border-radius:3px; }
+  .data-table { width:100%; border-collapse:collapse; font-size:12px; text-align:left; }
+  .data-table th, .data-table td { padding:12px 16px; border-bottom:1px solid var(--border); }
+  .data-table th { background:var(--panel); color:var(--text2); text-transform:uppercase; letter-spacing:0.05em; font-weight:600; position:sticky; top:0; z-index:2; border-bottom:2px solid var(--border); }
+  .data-table tr:hover td { background:var(--bg2); }
+  .status-badge { padding:3px 7px; border-radius:4px; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; }
+  .status-badge.fail { background:var(--red-dim); color:var(--red); border:1px solid var(--red); }
+  .status-badge.repair { background:var(--accent-dim); color:var(--accent); border:1px solid var(--accent); }
 
   /* PANEL */
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-lg); padding:14px 16px; }
@@ -172,6 +186,10 @@
     <div class="tab" data-tab="sim" onclick="switchTab('sim')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3" stroke-linecap="round"/></svg>
       Simulación
+    </div>
+    <div class="tab" data-tab="history" onclick="switchTab('history')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7c-2 0-3 1-3 3z" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 11h16M8 15h4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Base de Datos
     </div>
   </nav>
   <div class="topbar-right">
@@ -336,6 +354,33 @@
   </div>
 </main>
 
+<main id="page-history" class="page">
+  <div class="panel" style="width:100%; display:flex; flex-direction:column; padding:0;">
+    <div class="panel-header" style="padding:15px; margin-bottom:0; border-bottom:1px solid var(--border);">
+      <span class="panel-title" style="font-size:12px;">Historial de Auditoría — MongoDB Atlas</span>
+      <button onclick="fetchDBHistory()" style="background:var(--blue-dim);border:1px solid var(--blue);color:var(--blue);padding:6px 12px;border-radius:var(--radius);cursor:pointer;font-family:var(--font);font-size:10px;font-weight:600;letter-spacing:0.05em;transition:background 0.2s;">
+        ↻ ACTUALIZAR DATOS
+      </button>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Fecha / Hora (UTC)</th>
+            <th>ID de Nodo</th>
+            <th>Región / Zona</th>
+            <th>Estado en BD</th>
+            <th>Mensaje / Diagnóstico</th>
+          </tr>
+        </thead>
+        <tbody id="history-tbody">
+          <tr><td colspan="5" style="text-align:center;color:var(--text3);padding:40px;font-size:13px;">Haz clic en "Actualizar Datos" para descargar los últimos 200 registros de la nube.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
 <script>
 // ══════════════════════════════
 // STATE
@@ -399,7 +444,7 @@ async function init() {
   // Animate loop
   requestAnimationFrame(animLoop);
 
-// Heartbeats regionales: cada 4 segundos, las regiones envían ping al centro
+  // Heartbeats regionales: cada 4 segundos, las regiones envían ping al centro
   setInterval(fireRegionalHeartbeats, 4000);
   setTimeout(fireRegionalHeartbeats, 1200); // Primer latido al cargar la página
 
@@ -446,7 +491,6 @@ function setupCanvas(canvas, role) {
       e.preventDefault(); return;
     }
     if (role === 'sim') {
-      // Check if right-click/middle — skip
       if (e.button !== 0) { v.dragging=true; v.lastX=e.clientX; v.lastY=e.clientY; return; }
       isDrawing = true;
       handleSimInteract(e, canvas);
@@ -466,7 +510,6 @@ function setupCanvas(canvas, role) {
   canvas.addEventListener('mouseup',    () => { v.dragging = false; if(role==='sim') isDrawing=false; });
   canvas.addEventListener('mouseleave', () => { v.dragging = false; if(role==='sim'){ isDrawing=false; document.getElementById('node-tooltip').style.display='none'; } });
 
-  // Right-click drag to pan (admin map)
   if (role === 'admin') {
     canvas.addEventListener('mousedown', e => { if(e.button===2||e.button===1){ v.dragging=true; v.lastX=e.clientX; v.lastY=e.clientY; e.preventDefault(); }});
     canvas.addEventListener('contextmenu', e => e.preventDefault());
@@ -504,7 +547,6 @@ function drawCanvas(canvas, role) {
 
   const now = Date.now();
 
-  // Draw nodes
   for (const id in topology) {
     const node = topology[id];
     const nid  = parseInt(id);
@@ -517,7 +559,6 @@ function drawCanvas(canvas, role) {
       ? FAIL_COLORS[activeFailures[nid]] || '#c0504a'
       : ZONE_COLORS[node.zone] || '#5b7080';
 
-    // PARPADEO_LDR: flicker effect
     if (isFail && activeFailures[nid] === 'PARPADEO_LDR') {
       const t = (Math.sin(now / 200) + 1) / 2;
       ctx.globalAlpha = 0.25 + t * 0.75;
@@ -525,14 +566,12 @@ function drawCanvas(canvas, role) {
 
     const r = isSuperNode ? (isFail ? 5.5 : 5) : (isFail ? 3.5 : 2);
 
-    // Halo for super nodes
     if (isSuperNode) {
       ctx.beginPath();
       ctx.arc(x, y, r + 4, 0, 2*Math.PI);
       ctx.fillStyle = color + '20';
       ctx.fill();
     }
-    // Fail ring
     if (isFail) {
       ctx.beginPath();
       ctx.arc(x, y, r + 2, 0, 2*Math.PI);
@@ -548,7 +587,6 @@ function drawCanvas(canvas, role) {
     ctx.globalAlpha = 1;
   }
 
-  // Draw pings
   for (const p of pings) {
     const ox1 = p.x1 * canvas.width * v.zoom + v.ox;
     const oy1 = (1-p.y1) * canvas.height * v.zoom + v.oy;
@@ -558,7 +596,6 @@ function drawCanvas(canvas, role) {
     const cx = ox1 + (ox2 - ox1) * p.progress;
     const cy = oy1 + (oy2 - oy1) * p.progress;
 
-    // Trail
     ctx.beginPath();
     ctx.moveTo(ox1 + (ox2-ox1)*Math.max(0,p.progress-0.18), oy1 + (oy2-oy1)*Math.max(0,p.progress-0.18));
     ctx.lineTo(cx, cy);
@@ -566,7 +603,6 @@ function drawCanvas(canvas, role) {
     ctx.lineWidth   = 1;
     ctx.stroke();
 
-    // Dot
     ctx.beginPath();
     ctx.arc(cx, cy, 3, 0, 2*Math.PI);
     ctx.fillStyle = p.color;
@@ -593,7 +629,6 @@ function getMasterNode() {
 }
 
 function fireRegionalHeartbeats() {
-  // Las regiones (Super Nodos) envían su telemetría al Master Central
   const master = getMasterNode();
   if (master === undefined || !topology[master]) return;
   const mx = topology[master].x, my = topology[master].y;
@@ -602,7 +637,6 @@ function fireRegionalHeartbeats() {
     if (sn === master) continue;
     const node = topology[sn];
     if (!node) continue;
-    // CORRECCIÓN: El origen (x1, y1) ahora es el Nodo Regional, y el destino (x2, y2) es el Master.
     pings.push({ id:pingId++, x1:node.x, y1:node.y, x2:mx, y2:my, progress:0, color:PING_COLORS.master });
   }
 }
@@ -613,28 +647,19 @@ function fireFailPing(nodeId) {
   const centralMaster = getMasterNode();
   const mst = topology[centralMaster];
   
-  // Buscar el Super Nodo que corresponde a la zona del nodo que falló
   const zoneSupId = superNodes.find(sn => topology[sn]?.zone === node.zone);
   const zs = topology[zoneSupId];
 
   if (!zs || !mst) return;
-
-  // Si el que falla es el propio Master Central, no hace falta enrutamiento
   if (nodeId == centralMaster) return;
 
   if (node.zone === "ZONA-CENTRAL (Master)") {
-      // Si está en la zona central, va directo al Maestro Central
       pings.push({ id:pingId++, x1:node.x, y1:node.y, x2:mst.x, y2:mst.y, progress:0, color:PING_COLORS.fail });
   } else {
       if (nodeId == zoneSupId) {
-          // Si el que falló es el Super Nodo regional, va directo al Central
           pings.push({ id:pingId++, x1:node.x, y1:node.y, x2:mst.x, y2:mst.y, progress:0, color:PING_COLORS.fail });
       } else {
-          // ENRUTAMIENTO CORRECTO: Nodo -> Maestro de Zona -> Maestro Central
-          // 1. Del nodo al maestro de su zona
           pings.push({ id:pingId++, x1:node.x, y1:node.y, x2:zs.x, y2:zs.y, progress:0, color:PING_COLORS.fail });
-          
-          // 2. Del maestro de zona al maestro central (se ejecuta 1.2 segundos después para simular el "relevo")
           setTimeout(() => {
               pings.push({ id:pingId++, x1:zs.x, y1:zs.y, x2:mst.x, y2:mst.y, progress:0, color:PING_COLORS.fail });
           }, 1200);
@@ -654,16 +679,12 @@ function fireRepairPing(nodeId) {
   if (nodeId == centralMaster) return;
 
   if (node.zone === "ZONA-CENTRAL (Master)") {
-      // Confirmación directa desde el Master Central al Nodo Central
       pings.push({ id:pingId++, x1:mst.x, y1:mst.y, x2:node.x, y2:node.y, progress:0, color:PING_COLORS.repair });
   } else {
       if (nodeId == zoneSupId) {
-          // Confirmación directa desde el Master Central al Maestro de Zona
           pings.push({ id:pingId++, x1:mst.x, y1:mst.y, x2:node.x, y2:node.y, progress:0, color:PING_COLORS.repair });
       } else {
-          // ENRUTAMIENTO CORRECTO: Maestro Central -> Maestro de Zona -> Nodo Normal
           pings.push({ id:pingId++, x1:mst.x, y1:mst.y, x2:zs.x, y2:zs.y, progress:0, color:PING_COLORS.repair });
-          
           setTimeout(() => {
               pings.push({ id:pingId++, x1:zs.x, y1:zs.y, x2:node.x, y2:node.y, progress:0, color:PING_COLORS.repair });
           }, 1200);
@@ -686,6 +707,46 @@ async function fetchState() {
     updateKPIs();
     updateZoneList();
   } catch(e) {}
+}
+
+// ══════════════════════════════
+// MONGODB HISTORICAL API
+// ══════════════════════════════
+async function fetchDBHistory() {
+  const tbody = document.getElementById('history-tbody');
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text2);padding:40px;">Cargando datos desde MongoDB Atlas... <span class="status-dot" style="display:inline-block;margin-left:5px;"></span></td></tr>';
+  try {
+    const res = await fetch('/api/history');
+    const json = await res.json();
+    
+    if(json.error) {
+       tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--red);padding:40px;">Error: ${json.error}</td></tr>`;
+       return;
+    }
+    if(!json.data || json.data.length === 0) {
+       tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:40px;">No hay registros en la base de datos de MongoDB.</td></tr>';
+       return;
+    }
+    
+    tbody.innerHTML = json.data.map(r => {
+       const isFail = r.status === 'CRITICAL_FAIL';
+       let timeStr = r.timestamp;
+       try {
+           const d = new Date(r.timestamp);
+           if(!isNaN(d)) timeStr = d.toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'medium' });
+       } catch(e) {}
+       
+       return `<tr>
+         <td style="color:var(--text2)">${timeStr}</td>
+         <td style="font-weight:600; color:var(--text)">#${r.node_id || '-'}</td>
+         <td>${r.zone || '-'}</td>
+         <td><span class="status-badge ${isFail?'fail':'repair'}">${r.status || 'UNKNOWN'}</span></td>
+         <td style="color:${isFail?'var(--red)':'var(--accent)'}">${r.message || '-'}</td>
+       </tr>`;
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--red);padding:40px;">Error de red al consultar MongoDB.</td></tr>`;
+  }
 }
 
 // ══════════════════════════════
@@ -887,6 +948,11 @@ function updateWeather() {
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));
   document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id==='page-'+tab));
+  
+  // Si entra a la pestaña de base de datos, cargar automáticamente los datos
+  if(tab === 'history') {
+    fetchDBHistory();
+  }
 }
 
 // ══════════════════════════════

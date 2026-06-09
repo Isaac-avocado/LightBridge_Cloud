@@ -88,19 +88,16 @@ def udp_listener():
         packet = json.loads(data.decode('utf-8'))
         
         if ROLE == 'MASTER':
-            # El Master recibe las alertas de las Regiones
             if packet.get('type') == 'sos':
                 msg = packet.get('message')
                 node_id = packet.get('source')
                 log_event(packet.get('zone'), msg, node_id)
         else:
-            # Una región recibe un comando de la web (fallo provocado manual)
             if packet.get('type') == 'control':
                 target = packet.get('target')
                 if target in my_local_nodes:
                     action = packet.get('action')
                     msg = f"TEST_OK_NODO_{target}" if action == 'repair' else f"FALLO_NODO_{target}"
-                    # Envía el SOS al Master por la red
                     out_pkt = json.dumps({"type": "sos", "source": target, "zone": MY_ZONE, "message": msg})
                     udp_sock.sendto(out_pkt.encode('utf-8'), (MASTER_IP, 5001))
 
@@ -135,6 +132,18 @@ def get_topology():
 def get_state():
     return jsonify({"active_failures": list(active_failures), "logs": historical_logs})
 
+# --- NUEVA RUTA PARA CONSULTAR EL HISTORIAL DE MONGODB ---
+@app.route('/api/history')
+def get_history():
+    if alerts_col is None:
+        return jsonify({"error": "No hay conexión a la Base de Datos MongoDB.", "data": []})
+    try:
+        # Obtenemos los últimos 200 registros de la base de datos, del más nuevo al más viejo
+        records = list(alerts_col.find({}, {"_id": 0}).sort("timestamp", -1).limit(200))
+        return jsonify({"data": records})
+    except Exception as e:
+        return jsonify({"error": str(e), "data": []})
+
 @app.route('/api/control', methods=['POST'])
 def control_node():
     data = request.json
@@ -142,7 +151,6 @@ def control_node():
     action = data.get('action')
     zone = NODE_ZONES.get(target)
     
-    # --- ENRUTAMIENTO HACIA LAS MÁQUINAS AWS (IPs Elásticas) ---
     dest_ip = "127.0.0.1" 
     if zone == "ZONA-NORTE": dest_ip = NORTE_IP
     elif zone == "ZONA-SUR": dest_ip = SUR_IP
