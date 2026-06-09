@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  master_central:
+    build: .
+    container_name: ec2_master_central
+    environment:
+      - ROLE=MASTER
+      - ZONE=ZONA-CENTRAL (Master)
+      - MONGO_URI=mongodb+srv://admin:XXXXX@lightbridge.vimzcey.mongodb.net/
+    ports:
+      - "80:80"      # Aquí entrarás a la página web: http://localhost
+      - "5001:5001/udp"
+    networks:
+      vpc_simulada:
+        ipv4_address: 10.0.0.10
+
+  region_norte:
+    build: .
+    container_name: ec2_region_norte
+    environment:
+      - ROLE=REGION
+      - ZONE=ZONA-NORTE
+      - MASTER_IP=10.0.0.10
+    networks:
+      vpc_simulada:
+        ipv4_address: 10.0.0.11
+
+  region_sur:
+    build: .
+    container_name: ec2_region_sur
+    environment:
+      - ROLE=REGION
+      - ZONE=ZONA-SUR
+      - MASTER_IP=10.0.0.10
+    networks:
+      vpc_simulada:
+        ipv4_address: 10.0.0.12
+
+networks:
+  vpc_simulada:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24

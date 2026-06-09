@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Light Bridge SCADA</title>
+<style>
+  :root {
+    --bg:     #0e1117;
+    --bg2:    #131720;
+    --bg3:    #181d28;
+    --panel:  #1c2132;
+    --border: rgba(255,255,255,0.07);
+    --border2:rgba(255,255,255,0.12);
+    --accent: #4db88a;
+    --accent-dim: rgba(77,184,138,0.10);
+    --blue:   #5b8dd9;
+    --blue-dim: rgba(91,141,217,0.10);
+    --red:    #c0504a;
+    --red-dim: rgba(192,80,74,0.10);
+    --amber:  #c98a3a;
+    --amber-dim: rgba(201,138,58,0.10);
+    --purple: #8b6bbf;
+    --purple-dim: rgba(139,107,191,0.10);
+    --text:   #d4d8e0;
+    --text2:  #6e7a8a;
+    --text3:  #3d4554;
+    --font:   'Consolas','Menlo',monospace;
+    --radius: 7px;
+    --radius-lg: 11px;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:var(--font); font-size:13px; min-height:100vh; overflow-x:hidden; }
+
+  /* TOPBAR */
+  .topbar { display:flex; align-items:center; background:var(--bg2); border-bottom:1px solid var(--border); padding:0 24px; height:50px; }
+  .topbar-logo { display:flex; align-items:center; gap:9px; font-size:13px; font-weight:600; letter-spacing:0.05em; color:var(--accent); margin-right:28px; }
+  .topbar-logo svg { width:20px; height:20px; }
+  .tabs { display:flex; gap:2px; }
+  .tab { padding:0 16px; height:50px; display:flex; align-items:center; gap:7px; font-size:11px; letter-spacing:0.07em; color:var(--text2); cursor:pointer; border-bottom:2px solid transparent; transition:color 0.12s,border-color 0.12s; text-transform:uppercase; user-select:none; }
+  .tab:hover { color:var(--text); }
+  .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .tab svg { width:14px; height:14px; }
+  .topbar-right { margin-left:auto; display:flex; align-items:center; gap:10px; color:var(--text2); font-size:11px; }
+  .status-dot { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:blink 2.5s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  #clock { font-variant-numeric:tabular-nums; }
+
+  /* PAGES */
+  .page { display:none; padding:18px 22px; }
+  .page.active { display:grid; }
+  #page-admin { grid-template-columns:1fr 320px; gap:14px; min-height:calc(100vh - 50px); }
+  .admin-main { display:flex; flex-direction:column; gap:14px; }
+  .admin-side { display:flex; flex-direction:column; gap:14px; }
+  #page-sim { grid-template-columns:1fr 288px; gap:14px; min-height:calc(100vh - 50px); align-items:start; }
+  .sim-main { display:flex; flex-direction:column; gap:14px; }
+  .sim-side { display:flex; flex-direction:column; gap:14px; }
+
+  /* PANEL */
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-lg); padding:14px 16px; }
+  .panel-header { display:flex; align-items:center; gap:8px; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--border); }
+  .panel-title { font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--text2); flex:1; }
+  .panel-badge { font-size:10px; padding:2px 8px; border-radius:4px; background:var(--accent-dim); color:var(--accent); letter-spacing:0.05em; }
+  .panel-badge.warn   { background:var(--amber-dim); color:var(--amber); }
+  .panel-badge.danger { background:var(--red-dim);   color:var(--red); }
+
+  /* STAT CARDS */
+  .stat-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:9px; }
+  .stat-card { background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); padding:13px 15px; }
+  .stat-label { font-size:9px; letter-spacing:0.1em; color:var(--text2); margin-bottom:7px; text-transform:uppercase; }
+  .stat-value { font-size:24px; font-weight:700; line-height:1; letter-spacing:-0.02em; }
+  .stat-value.green  { color:var(--accent); }
+  .stat-value.red    { color:var(--red); }
+  .stat-value.amber  { color:var(--amber); }
+  .stat-value.blue   { color:var(--blue); }
+  .stat-sub { font-size:10px; color:var(--text3); margin-top:5px; }
+
+  /* MAP WRAP — zoom container */
+  .map-outer { position:relative; background:var(--bg3); border-radius:var(--radius); border:1px solid var(--border); overflow:hidden; flex:1; min-height:380px; }
+  .map-outer canvas { display:block; position:absolute; top:0; left:0; width:100%; height:100%; }
+  .zoom-hint { position:absolute; bottom:8px; right:10px; font-size:9px; color:var(--text3); pointer-events:none; letter-spacing:0.05em; }
+
+  /* ZONE STATUS */
+  .zone-list { display:flex; flex-direction:column; gap:7px; }
+  .zone-item { display:flex; align-items:center; gap:9px; background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); padding:9px 11px; }
+  .zone-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .zone-name { flex:1; font-size:11px; color:var(--text2); }
+  .zone-count { font-size:11px; font-weight:600; }
+  .zone-ok   { color:var(--accent); }
+  .zone-fail { color:var(--red); }
+
+  /* LOG */
+  .log-wrap { max-height:220px; overflow-y:auto; }
+  .log-wrap::-webkit-scrollbar { width:3px; }
+  .log-wrap::-webkit-scrollbar-thumb { background:var(--border2); border-radius:2px; }
+  .log-entry { display:flex; align-items:flex-start; gap:9px; padding:6px 0; border-bottom:1px solid var(--border); font-size:11px; line-height:1.5; }
+  .log-entry:last-child { border-bottom:none; }
+  .log-time { color:var(--text3); flex-shrink:0; font-variant-numeric:tabular-nums; }
+  .log-msg  { flex:1; }
+  .log-fail   .log-msg { color:var(--red); }
+  .log-repair .log-msg { color:var(--accent); }
+  .log-empty { color:var(--text3); font-size:12px; padding:18px 0; text-align:center; }
+
+  /* SIM CONTROLS */
+  .mode-btns { display:flex; gap:7px; }
+  .mode-btn { flex:1; padding:9px 10px; border-radius:var(--radius); border:1px solid var(--border); background:var(--bg3); color:var(--text2); cursor:pointer; font-family:var(--font); font-size:10px; letter-spacing:0.06em; text-transform:uppercase; transition:all 0.12s; text-align:center; }
+  .mode-btn:hover { border-color:var(--border2); color:var(--text); }
+  .mode-btn.active-fail   { background:var(--red-dim);    border-color:var(--red);    color:var(--red); }
+  .mode-btn.active-repair { background:var(--accent-dim); border-color:var(--accent); color:var(--accent); }
+
+  .failure-types { display:flex; flex-direction:column; gap:5px; }
+  .fail-type-btn { display:flex; align-items:center; gap:9px; padding:9px 11px; border-radius:var(--radius); border:1px solid var(--border); background:var(--bg3); cursor:pointer; transition:all 0.12s; user-select:none; }
+  .fail-type-btn:hover { border-color:var(--border2); }
+  .fail-type-btn.selected { border-color:var(--red); background:var(--red-dim); }
+  .fail-type-icon { width:26px; height:26px; border-radius:5px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .fail-type-icon svg { width:14px; height:14px; }
+  .fail-type-name { font-size:11px; font-weight:600; color:var(--text); }
+  .fail-type-desc { font-size:10px; color:var(--text2); margin-top:2px; }
+
+  /* WEATHER */
+  .weather-sliders { display:flex; flex-direction:column; gap:11px; }
+  .weather-row { display:flex; align-items:center; gap:9px; }
+  .weather-label { font-size:9px; color:var(--text2); letter-spacing:0.06em; text-transform:uppercase; width:76px; flex-shrink:0; }
+  .weather-row input[type=range] { flex:1; -webkit-appearance:none; appearance:none; height:3px; background:var(--border2); border-radius:2px; outline:none; }
+  .weather-row input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:13px; height:13px; border-radius:50%; background:var(--accent); cursor:pointer; }
+  .weather-val { font-size:10px; color:var(--accent); width:38px; text-align:right; font-weight:600; }
+
+  /* SIM MINI */
+  .sim-mini { display:flex; gap:8px; }
+  .sim-mini-card { flex:1; background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); padding:9px; text-align:center; }
+  .sim-mini-val { font-size:19px; font-weight:700; }
+  .sim-mini-lbl { font-size:9px; color:var(--text2); letter-spacing:0.08em; text-transform:uppercase; margin-top:3px; }
+
+  /* SIM MAP */
+  #sim-map-wrap { background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; height:400px; position:relative; }
+  #simCanvas { display:block; position:absolute; top:0; left:0; width:100%; height:100%; }
+
+  /* TOOLTIP */
+  #node-tooltip { position:absolute; pointer-events:none; background:var(--panel); border:1px solid var(--border2); border-radius:var(--radius); padding:7px 11px; font-size:11px; display:none; z-index:10; min-width:156px; }
+  .tooltip-id { font-weight:700; color:var(--text); margin-bottom:3px; }
+  .tooltip-zone { color:var(--text2); margin-bottom:3px; }
+  .tooltip-status { font-weight:600; }
+  .tooltip-status.ok   { color:var(--accent); }
+  .tooltip-status.fail { color:var(--red); }
+
+  /* SIM LOG */
+  .sim-log { max-height:170px; overflow-y:auto; }
+  .sim-log::-webkit-scrollbar { width:3px; }
+  .sim-log::-webkit-scrollbar-thumb { background:var(--border2); border-radius:2px; }
+
+  ::-webkit-scrollbar { width:5px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--border2); border-radius:3px; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <circle cx="12" cy="12" r="9"/>
+      <path d="M12 3v3m0 12v3M3 12h3m12 0h3" stroke-linecap="round"/>
+      <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>
+    </svg>
+    LIGHT BRIDGE <span style="color:var(--text2);font-weight:400;margin-left:2px">SCADA</span>
+  </div>
+  <nav class="tabs">
+    <div class="tab active" data-tab="admin" onclick="switchTab('admin')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+      Dashboard
+    </div>
+    <div class="tab" data-tab="sim" onclick="switchTab('sim')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3" stroke-linecap="round"/></svg>
+      Simulación
+    </div>
+  </nav>
+  <div class="topbar-right">
+    <div class="status-dot"></div>
+    <span>Sistema activo</span>
+    <span style="color:var(--border2)">|</span>
+    <span id="clock">--:--:--</span>
+  </div>
+</header>
+
+<main id="page-admin" class="page active">
+  <div class="admin-main">
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">Nodos Totales</div><div class="stat-value blue" id="kpi-total">--</div><div class="stat-sub">en la red</div></div>
+      <div class="stat-card"><div class="stat-label">Operativos</div><div class="stat-value green" id="kpi-ok">--</div><div class="stat-sub">en línea</div></div>
+      <div class="stat-card"><div class="stat-label">Fallos Activos</div><div class="stat-value red" id="kpi-fail">0</div><div class="stat-sub">nodos caídos</div></div>
+      <div class="stat-card"><div class="stat-label">Disponibilidad</div><div class="stat-value green" id="kpi-avail">--%</div><div class="stat-sub">uptime actual</div></div>
+    </div>
+
+    <div class="panel" style="flex:1;display:flex;flex-direction:column;padding:13px;">
+      <div class="panel-header">
+        <span class="panel-title">Mapa de red — topología en tiempo real</span>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:10px;color:#8b7bbf;">● Central</span>
+          <span style="font-size:10px;color:#5b9daa;">● Norte</span>
+          <span style="font-size:10px;color:#5a9e70;">● Sur</span>
+          <span style="font-size:10px;color:#9e8f4a;">● Este</span>
+          <span style="font-size:10px;color:#a06640;">● Oeste</span>
+          <span style="font-size:10px;color:var(--red);">● Fallo</span>
+        </div>
+      </div>
+      <div class="map-outer" id="admin-map-outer">
+        <canvas id="scadaCanvas"></canvas>
+        <div class="zoom-hint">scroll para zoom · arrastra para mover</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Fallos por tipo</span>
+        <span class="panel-badge warn" id="type-badge">0 eventos</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div id="bar-parpadeo"></div>
+        <div id="bar-apagada"></div>
+        <div id="bar-rele"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="admin-side">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Estado por Zona</span>
+        <span class="panel-badge" id="zone-badge">OK</span>
+      </div>
+      <div class="zone-list" id="zone-list"></div>
+    </div>
+    <div class="panel" style="flex:1;">
+      <div class="panel-header">
+        <span class="panel-title">Log de eventos</span>
+        <span class="panel-badge" id="log-badge">0 registros</span>
+      </div>
+      <div class="log-wrap" id="admin-log"><div class="log-empty">Sin eventos aún.</div></div>
+    </div>
+  </div>
+</main>
+
+<main id="page-sim" class="page">
+  <div class="sim-main">
+    <div class="sim-mini">
+      <div class="sim-mini-card"><div class="sim-mini-val red" id="sim-fail-count">0</div><div class="sim-mini-lbl">Fallos activos</div></div>
+      <div class="sim-mini-card"><div class="sim-mini-val" id="sim-fail-type" style="color:var(--amber);font-size:12px;font-weight:700;">—</div><div class="sim-mini-lbl">Tipo seleccionado</div></div>
+      <div class="sim-mini-card"><div class="sim-mini-val green" id="sim-repaired">0</div><div class="sim-mini-lbl">Reparados sesión</div></div>
+    </div>
+
+    <div class="panel" style="padding:13px;">
+      <div class="panel-header">
+        <span class="panel-title">Canvas de simulación</span>
+        <span id="sim-mode-label" style="font-size:10px;letter-spacing:0.06em;color:var(--red);">▶ MODO FALLO</span>
+      </div>
+      <div id="sim-map-wrap">
+        <canvas id="simCanvas"></canvas>
+        <div id="node-tooltip">
+          <div class="tooltip-id" id="tt-id"></div>
+          <div class="tooltip-zone" id="tt-zone"></div>
+          <div class="tooltip-status" id="tt-status"></div>
+          <div style="color:var(--text3);font-size:10px;margin-top:3px;" id="tt-hint"></div>
+        </div>
+        <div class="zoom-hint">scroll para zoom · arrastra para mover</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Eventos de simulación</span>
+        <button onclick="clearSimLog()" style="font-family:var(--font);font-size:10px;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:2px 9px;border-radius:4px;cursor:pointer;">Limpiar</button>
+      </div>
+      <div class="sim-log" id="sim-log"><div class="log-empty">Inicia la simulación para ver eventos.</div></div>
+    </div>
+  </div>
+
+  <div class="sim-side">
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Modo de interacción</span></div>
+      <div class="mode-btns" style="margin-bottom:10px;">
+        <div class="mode-btn active-fail" id="btn-fail" onclick="setMode('fail')">⚡ Fallo</div>
+        <div class="mode-btn" id="btn-repair" onclick="setMode('repair')">🔧 Reparar</div>
+      </div>
+      <div style="font-size:10px;color:var(--text3);line-height:1.6;">
+        <span style="color:var(--red);">Fallo</span>: clic o arrastra para aplicar tipo seleccionado.<br>
+        <span style="color:var(--accent);">Reparar</span>: clic o arrastra sobre nodos caídos.
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Tipo de Fallo</span></div>
+      <div class="failure-types">
+        <div class="fail-type-btn selected" onclick="selectFailType('PARPADEO_LDR')" id="ft-PARPADEO_LDR">
+          <div class="fail-type-icon" style="background:var(--amber-dim);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83" stroke-linecap="round"/></svg>
+          </div>
+          <div><div class="fail-type-name">PARPADEO_LDR</div><div class="fail-type-desc">Sensor LDR inestable</div></div>
+        </div>
+        <div class="fail-type-btn" onclick="selectFailType('APAGADA_CRITICA')" id="ft-APAGADA_CRITICA">
+          <div class="fail-type-icon" style="background:var(--red-dim);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 3v.5" stroke-linecap="round"/></svg>
+          </div>
+          <div><div class="fail-type-name">APAGADA_CRITICA</div><div class="fail-type-desc">Apagado total — crítico</div></div>
+        </div>
+        <div class="fail-type-btn" onclick="selectFailType('NO_ENCENDIO_RELE')" id="ft-NO_ENCENDIO_RELE">
+          <div class="fail-type-icon" style="background:var(--purple-dim);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2"><rect x="8" y="3" width="8" height="5" rx="1"/><path d="M12 8v4m0 0l-4 5m4-5l4 5" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 21h14" stroke-linecap="round" opacity="0.5"/></svg>
+          </div>
+          <div><div class="fail-type-name">NO_ENCENDIO_RELE</div><div class="fail-type-desc">Relé no conmutó al encender</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Condiciones climáticas</span><span class="panel-badge">Simulado</span></div>
+      <div class="weather-sliders">
+        <div class="weather-row"><span class="weather-label">Temperatura</span><input type="range" id="w-temp" min="-10" max="50" value="22" oninput="updateWeather()"><span class="weather-val" id="wv-temp">22°C</span></div>
+        <div class="weather-row"><span class="weather-label">Humedad</span><input type="range" id="w-hum" min="0" max="100" value="55" oninput="updateWeather()"><span class="weather-val" id="wv-hum">55%</span></div>
+        <div class="weather-row"><span class="weather-label">Viento</span><input type="range" id="w-wind" min="0" max="120" value="10" oninput="updateWeather()"><span class="weather-val" id="wv-wind">10km/h</span></div>
+        <div class="weather-row"><span class="weather-label">Lluvia</span><input type="range" id="w-rain" min="0" max="100" value="0" oninput="updateWeather()"><span class="weather-val" id="wv-rain">0mm/h</span></div>
+      </div>
+      <div style="margin-top:11px;padding-top:9px;border-top:1px solid var(--border);">
+        <div style="font-size:9px;color:var(--text3);margin-bottom:5px;">Estrés sobre la red</div>
+        <div style="height:5px;background:var(--bg);border-radius:3px;overflow:hidden;"><div id="weather-stress-fill" style="height:100%;width:0%;border-radius:3px;transition:width 0.3s;background:var(--accent);"></div></div>
+        <div style="display:flex;justify-content:space-between;margin-top:3px;"><span style="font-size:9px;color:var(--text3);">Bajo</span><span style="font-size:9px;color:var(--accent);" id="stress-label">0% estrés</span><span style="font-size:9px;color:var(--text3);">Crítico</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Acciones rápidas</span></div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <button onclick="repairAll()" style="padding:8px;border-radius:var(--radius);border:1px solid var(--accent);background:var(--accent-dim);color:var(--accent);cursor:pointer;font-family:var(--font);font-size:10px;letter-spacing:0.06em;">✓ REPARAR TODOS</button>
+        <button onclick="triggerRandomFail()" style="padding:8px;border-radius:var(--radius);border:1px solid var(--red);background:var(--red-dim);color:var(--red);cursor:pointer;font-family:var(--font);font-size:10px;letter-spacing:0.06em;">⚡ FALLO ALEATORIO x5</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+// ══════════════════════════════
+// STATE
+// ══════════════════════════════
+let topology   = {};
+let superNodes = [];
+let activeFailures = {};   // nodeId -> failType
+let currentMode    = 'fail';
+let currentFailType= 'PARPADEO_LDR';
+let isDrawing  = false;
+let simLogs    = [];
+let repairedCount  = 0;
+let failTypeCounts = { PARPADEO_LDR:0, APAGADA_CRITICA:0, NO_ENCENDIO_RELE:0 };
+
+// Ping animations: { id, x1,y1,x2,y2, progress(0-1), type, color }
+let pings = [];
+let pingId = 0;
+
+// Zoom/pan state per canvas
+const VIEW = {
+  admin: { zoom:1, ox:0, oy:0, dragging:false, lastX:0, lastY:0 },
+  sim:   { zoom:1, ox:0, oy:0, dragging:false, lastX:0, lastY:0 }
+};
+
+const ZONE_COLORS = {
+  "ZONA-CENTRAL (Master)": "#8b7bbf",
+  "ZONA-NORTE":  "#5b9daa",
+  "ZONA-SUR":    "#5a9e70",
+  "ZONA-ESTE":   "#9e8f4a",
+  "ZONA-OESTE":  "#a06640"
+};
+const FAIL_COLORS = {
+  "PARPADEO_LDR":    "#c98a3a",
+  "APAGADA_CRITICA": "#c0504a",
+  "NO_ENCENDIO_RELE":"#8b6bbf"
+};
+// Ping colors
+const PING_COLORS = {
+  master:  "#5b8dd9",   // blue — initial heartbeat from master
+  fail:    "#c0504a",   // red  — failure report going to master
+  repair:  "#4db88a"    // green — repair confirmation
+};
+
+// ══════════════════════════════
+// INIT
+// ══════════════════════════════
+async function init() {
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  const data = await fetch('/api/topology').then(r => r.json());
+  topology   = data.nodes;
+  superNodes = data.super_nodes;
+
+  setupCanvas(document.getElementById('scadaCanvas'), 'admin');
+  setupCanvas(document.getElementById('simCanvas'),   'sim');
+  renderZoneList();
+  updateKPIs();
+  updateTypeChart();
+
+  // Animate loop
+  requestAnimationFrame(animLoop);
+
+  // Master heartbeat pings: every 4s, super nodes send ping to center
+  setInterval(fireMasterPings, 4000);
+  setTimeout(fireMasterPings, 1200); // first one soon after load
+
+  setInterval(fetchState, 1000);
+}
+
+// ══════════════════════════════
+// CLOCK
+// ══════════════════════════════
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('es-MX');
+}
+
+// ══════════════════════════════
+// CANVAS SETUP — zoom/pan
+// ══════════════════════════════
+function setupCanvas(canvas, role) {
+  const resize = () => {
+    const wrap = canvas.parentElement;
+    canvas.width  = wrap.clientWidth;
+    canvas.height = wrap.clientHeight;
+  };
+  resize();
+  new ResizeObserver(resize).observe(canvas.parentElement);
+
+  const v = VIEW[role];
+
+  // Zoom via wheel
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
+    const rect   = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    v.ox = mx - factor*(mx - v.ox);
+    v.oy = my - factor*(my - v.oy);
+    v.zoom = Math.max(0.5, Math.min(20, v.zoom * factor));
+  }, { passive:false });
+
+  // Pan via drag
+  canvas.addEventListener('mousedown', e => {
+    if (e.button === 1 || e.altKey) {
+      v.dragging = true; v.lastX = e.clientX; v.lastY = e.clientY;
+      e.preventDefault(); return;
+    }
+    if (role === 'sim') {
+      // Check if right-click/middle — skip
+      if (e.button !== 0) { v.dragging=true; v.lastX=e.clientX; v.lastY=e.clientY; return; }
+      isDrawing = true;
+      handleSimInteract(e, canvas);
+    }
+  });
+  canvas.addEventListener('mousemove', e => {
+    if (v.dragging) {
+      v.ox += e.clientX - v.lastX;
+      v.oy += e.clientY - v.lastY;
+      v.lastX = e.clientX; v.lastY = e.clientY;
+    }
+    if (role === 'sim') {
+      if (isDrawing && !v.dragging) handleSimInteract(e, canvas);
+      showTooltip(e, canvas);
+    }
+  });
+  canvas.addEventListener('mouseup',    () => { v.dragging = false; if(role==='sim') isDrawing=false; });
+  canvas.addEventListener('mouseleave', () => { v.dragging = false; if(role==='sim'){ isDrawing=false; document.getElementById('node-tooltip').style.display='none'; } });
+
+  // Right-click drag to pan (admin map)
+  if (role === 'admin') {
+    canvas.addEventListener('mousedown', e => { if(e.button===2||e.button===1){ v.dragging=true; v.lastX=e.clientX; v.lastY=e.clientY; e.preventDefault(); }});
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+  }
+}
+
+// ══════════════════════════════
+// COORD HELPERS
+// ══════════════════════════════
+function worldToScreen(nx, ny, canvas, v) {
+  return [nx * canvas.width * v.zoom + v.ox, (1-ny) * canvas.height * v.zoom + v.oy];
+}
+function screenToWorld(sx, sy, canvas, v) {
+  return [(sx - v.ox) / (canvas.width * v.zoom), 1 - (sy - v.oy) / (canvas.height * v.zoom)];
+}
+
+// ══════════════════════════════
+// ANIMATION LOOP
+// ══════════════════════════════
+function animLoop() {
+  drawCanvas(document.getElementById('scadaCanvas'), 'admin');
+  drawCanvas(document.getElementById('simCanvas'),   'sim');
+  advancePings();
+  requestAnimationFrame(animLoop);
+}
+
+// ══════════════════════════════
+// DRAW
+// ══════════════════════════════
+function drawCanvas(canvas, role) {
+  const ctx = canvas.getContext('2d');
+  const v   = VIEW[role];
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!Object.keys(topology).length) return;
+
+  const now = Date.now();
+
+  // Draw nodes
+  for (const id in topology) {
+    const node = topology[id];
+    const nid  = parseInt(id);
+    const isFail      = activeFailures.hasOwnProperty(nid);
+    const isSuperNode = superNodes.includes(nid);
+
+    const [x, y] = worldToScreen(node.x, node.y, canvas, v);
+
+    let color = isFail
+      ? FAIL_COLORS[activeFailures[nid]] || '#c0504a'
+      : ZONE_COLORS[node.zone] || '#5b7080';
+
+    // PARPADEO_LDR: flicker effect
+    if (isFail && activeFailures[nid] === 'PARPADEO_LDR') {
+      const t = (Math.sin(now / 200) + 1) / 2;
+      ctx.globalAlpha = 0.25 + t * 0.75;
+    }
+
+    const r = isSuperNode ? (isFail ? 5.5 : 5) : (isFail ? 3.5 : 2);
+
+    // Halo for super nodes
+    if (isSuperNode) {
+      ctx.beginPath();
+      ctx.arc(x, y, r + 4, 0, 2*Math.PI);
+      ctx.fillStyle = color + '20';
+      ctx.fill();
+    }
+    // Fail ring
+    if (isFail) {
+      ctx.beginPath();
+      ctx.arc(x, y, r + 2, 0, 2*Math.PI);
+      ctx.strokeStyle = color + '50';
+      ctx.lineWidth   = 1;
+      ctx.stroke();
+    }
+
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, 2*Math.PI);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Draw pings
+  for (const p of pings) {
+    const ox1 = p.x1 * canvas.width * v.zoom + v.ox;
+    const oy1 = (1-p.y1) * canvas.height * v.zoom + v.oy;
+    const ox2 = p.x2 * canvas.width * v.zoom + v.ox;
+    const oy2 = (1-p.y2) * canvas.height * v.zoom + v.oy;
+
+    const cx = ox1 + (ox2 - ox1) * p.progress;
+    const cy = oy1 + (oy2 - oy1) * p.progress;
+
+    // Trail
+    ctx.beginPath();
+    ctx.moveTo(ox1 + (ox2-ox1)*Math.max(0,p.progress-0.18), oy1 + (oy2-oy1)*Math.max(0,p.progress-0.18));
+    ctx.lineTo(cx, cy);
+    ctx.strokeStyle = p.color + '55';
+    ctx.lineWidth   = 1;
+    ctx.stroke();
+
+    // Dot
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, 2*Math.PI);
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = 1 - p.progress * 0.3;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function advancePings() {
+  const speed = 0.012;
+  pings = pings.filter(p => p.progress < 1);
+  for (const p of pings) p.progress += speed;
+}
+
+// ══════════════════════════════
+// PING FACTORIES
+// ══════════════════════════════
+function getMasterNode() {
+  for (const sn of superNodes) {
+    if (topology[sn]?.zone === "ZONA-CENTRAL (Master)") return sn;
+  }
+  return superNodes[0];
+}
+
+function fireMasterPings() {
+  // Master sends heartbeat to all other super nodes
+  const master = getMasterNode();
+  if (master === undefined || !topology[master]) return;
+  const mx = topology[master].x, my = topology[master].y;
+
+  for (const sn of superNodes) {
+    if (sn === master) continue;
+    const node = topology[sn];
+    if (!node) continue;
+    pings.push({ id:pingId++, x1:mx, y1:my, x2:node.x, y2:node.y, progress:0, color:PING_COLORS.master });
+  }
+}
+
+function fireFailPing(nodeId) {
+  const node = topology[nodeId];
+  if (!node) return;
+  const centralMaster = getMasterNode();
+  const mst = topology[centralMaster];
+  
+  // Buscar el Super Nodo que corresponde a la zona del nodo que falló
+  const zoneSupId = superNodes.find(sn => topology[sn]?.zone === node.zone);
+  const zs = topology[zoneSupId];
+
+  if (!zs || !mst) return;
+
+  // Si el que falla es el propio Master Central, no hace falta enrutamiento
+  if (nodeId == centralMaster) return;
+
+  if (node.zone === "ZONA-CENTRAL (Master)") {
+      // Si está en la zona central, va directo al Maestro Central
+      pings.push({ id:pingId++, x1:node.x, y1:node.y, x2:mst.x, y2:mst.y, progress:0, color:PING_COLORS.fail });
+  } else {
+      if (nodeId == zoneSupId) {
+          // Si el que falló es el Super Nodo regional, va directo al Central
+          pings.push({ id:pingId++, x1:node.x, y1:node.y, x2:mst.x, y2:mst.y, progress:0, color:PING_COLORS.fail });
+      } else {
+          // ENRUTAMIENTO CORRECTO: Nodo -> Maestro de Zona -> Maestro Central
+          // 1. Del nodo al maestro de su zona
+          pings.push({ id:pingId++, x1:node.x, y1:node.y, x2:zs.x, y2:zs.y, progress:0, color:PING_COLORS.fail });
+          
+          // 2. Del maestro de zona al maestro central (se ejecuta 1.2 segundos después para simular el "relevo")
+          setTimeout(() => {
+              pings.push({ id:pingId++, x1:zs.x, y1:zs.y, x2:mst.x, y2:mst.y, progress:0, color:PING_COLORS.fail });
+          }, 1200);
+      }
+  }
+}
+
+function fireRepairPing(nodeId) {
+  const node = topology[nodeId];
+  const centralMaster = getMasterNode();
+  const mst = topology[centralMaster];
+  
+  const zoneSupId = superNodes.find(sn => topology[sn]?.zone === node.zone);
+  const zs = topology[zoneSupId];
+
+  if (!node || !mst || !zs) return;
+  if (nodeId == centralMaster) return;
+
+  if (node.zone === "ZONA-CENTRAL (Master)") {
+      // Confirmación directa desde el Master Central al Nodo Central
+      pings.push({ id:pingId++, x1:mst.x, y1:mst.y, x2:node.x, y2:node.y, progress:0, color:PING_COLORS.repair });
+  } else {
+      if (nodeId == zoneSupId) {
+          // Confirmación directa desde el Master Central al Maestro de Zona
+          pings.push({ id:pingId++, x1:mst.x, y1:mst.y, x2:node.x, y2:node.y, progress:0, color:PING_COLORS.repair });
+      } else {
+          // ENRUTAMIENTO CORRECTO: Maestro Central -> Maestro de Zona -> Nodo Normal
+          pings.push({ id:pingId++, x1:mst.x, y1:mst.y, x2:zs.x, y2:zs.y, progress:0, color:PING_COLORS.repair });
+          
+          setTimeout(() => {
+              pings.push({ id:pingId++, x1:zs.x, y1:zs.y, x2:node.x, y2:node.y, progress:0, color:PING_COLORS.repair });
+          }, 1200);
+      }
+  }
+}
+
+// ══════════════════════════════
+// FETCH STATE (API)
+// ══════════════════════════════
+async function fetchState() {
+  try {
+    const data = await fetch('/api/state').then(r => r.json());
+    const serverFails = new Set(data.active_failures.map(Number));
+    for (const id of serverFails) {
+      if (!activeFailures.hasOwnProperty(id))
+        activeFailures[id] = 'NO_ENCENDIO_RELE';
+    }
+    renderAdminLog(data.logs);
+    updateKPIs();
+    updateZoneList();
+  } catch(e) {}
+}
+
+// ══════════════════════════════
+// FAILURE LOGIC
+// ══════════════════════════════
+function applyFail(nodeId, type, silent) {
+  if (activeFailures.hasOwnProperty(nodeId)) return;
+  activeFailures[nodeId] = type;
+  failTypeCounts[type] = (failTypeCounts[type]||0)+1;
+  if (!silent) addSimLog('fail', nodeId, type);
+  fireFailPing(nodeId);
+  updateKPIs(); updateZoneList(); updateTypeChart();
+  sendControlEvent(nodeId, 'fail');
+}
+
+function applyRepair(nodeId) {
+  if (!activeFailures.hasOwnProperty(nodeId)) return;
+  const type = activeFailures[nodeId];
+  delete activeFailures[nodeId];
+  repairedCount++;
+  addSimLog('repair', nodeId, type);
+  fireRepairPing(nodeId);
+  updateKPIs(); updateZoneList(); updateTypeChart();
+  sendControlEvent(nodeId, 'repair');
+}
+
+async function sendControlEvent(nodeId, action) {
+  try {
+    await fetch('/api/control', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({node_id:nodeId, action}) });
+  } catch(e) {}
+}
+
+// ══════════════════════════════
+// SIM INTERACTIONS
+// ══════════════════════════════
+function handleSimInteract(e, canvas) {
+  const v    = VIEW.sim;
+  const rect = canvas.getBoundingClientRect();
+  const sx   = (e.clientX - rect.left) * (canvas.width  / rect.width);
+  const sy   = (e.clientY - rect.top)  * (canvas.height / rect.height);
+  const [wx, wy] = screenToWorld(sx, sy, canvas, v);
+  const threshold = (currentMode === 'repair' ? 18 : 10) / (canvas.width * v.zoom);
+
+  for (const id in topology) {
+    const nid  = parseInt(id);
+    const node = topology[id];
+    const dist = Math.hypot(node.x - wx, node.y - wy);
+    if (dist < threshold) {
+      if (currentMode==='fail' && !activeFailures.hasOwnProperty(nid)) {
+        applyFail(nid, currentFailType, false); return;
+      } else if (currentMode==='repair' && activeFailures.hasOwnProperty(nid)) {
+        applyRepair(nid); return;
+      }
+    }
+  }
+}
+
+function showTooltip(e, canvas) {
+  const v    = VIEW.sim;
+  const rect = canvas.getBoundingClientRect();
+  const sx   = (e.clientX - rect.left) * (canvas.width  / rect.width);
+  const sy   = (e.clientY - rect.top)  * (canvas.height / rect.height);
+  const [wx, wy] = screenToWorld(sx, sy, canvas, v);
+  let nearest = null, minDist = 18 / (canvas.width * v.zoom);
+  for (const id in topology) {
+    const dist = Math.hypot(topology[id].x - wx, topology[id].y - wy);
+    if (dist < minDist) { minDist = dist; nearest = parseInt(id); }
+  }
+  const tip = document.getElementById('node-tooltip');
+  if (nearest !== null) {
+    const node = topology[nearest];
+    const isFail = activeFailures.hasOwnProperty(nearest);
+    document.getElementById('tt-id').textContent     = `Nodo #${nearest}`;
+    document.getElementById('tt-zone').textContent   = node.zone;
+    document.getElementById('tt-status').textContent = isFail ? `⚠ ${activeFailures[nearest]}` : '✓ Operativo';
+    document.getElementById('tt-status').className   = 'tooltip-status '+(isFail?'fail':'ok');
+    document.getElementById('tt-hint').textContent   = isFail ? (currentMode==='repair'?'Clic para reparar':'') : (currentMode==='fail'?'Clic para aplicar fallo':'');
+    tip.style.display = 'block';
+    tip.style.left    = (e.clientX - rect.left + 14)+'px';
+    tip.style.top     = (e.clientY - rect.top  - 12)+'px';
+  } else {
+    tip.style.display = 'none';
+  }
+}
+
+// ══════════════════════════════
+// UI UPDATES
+// ══════════════════════════════
+function updateKPIs() {
+  const total = Object.keys(topology).length;
+  const fails  = Object.keys(activeFailures).length;
+  const ok     = total - fails;
+  const avail  = total>0 ? Math.round((ok/total)*100) : 100;
+  document.getElementById('kpi-total').textContent = total||'--';
+  document.getElementById('kpi-ok').textContent    = total?ok:'--';
+  document.getElementById('kpi-fail').textContent  = fails;
+  document.getElementById('kpi-avail').textContent = total?avail+'%':'--%';
+  document.getElementById('kpi-fail').className    = 'stat-value '+(fails>0?'red':'green');
+  document.getElementById('kpi-avail').className   = 'stat-value '+(avail>=95?'green':avail>=80?'amber':'red');
+  document.getElementById('sim-fail-count').textContent = fails;
+  document.getElementById('sim-repaired').textContent   = repairedCount;
+  const pb = document.getElementById('zone-badge');
+  pb.textContent = fails>0?`${fails} alertas`:'Todo OK';
+  pb.className   = 'panel-badge '+(fails>0?'danger':'');
+}
+
+function updateZoneList() {
+  const failsByZone={}, totalByZone={};
+  for (const id in activeFailures) { const z=topology[id]?.zone; if(z) failsByZone[z]=(failsByZone[z]||0)+1; }
+  for (const id in topology)       { const z=topology[id].zone;        totalByZone[z]=(totalByZone[z]||0)+1; }
+  const ul = document.getElementById('zone-list');
+  ul.innerHTML = '';
+  for (const [zone, color] of Object.entries(ZONE_COLORS)) {
+    const f=failsByZone[zone]||0, t=totalByZone[zone]||0;
+    const d = document.createElement('div');
+    d.className = 'zone-item';
+    d.innerHTML = `<div class="zone-dot" style="background:${color}"></div><div class="zone-name">${zone.replace(' (Master)','')}</div><div class="zone-count ${f>0?'zone-fail':'zone-ok'}">${f>0?f+' caídos':'OK'} <span style="color:var(--text3);font-weight:400;font-size:9px;">/ ${t}</span></div>`;
+    ul.appendChild(d);
+  }
+}
+
+function renderAdminLog(logs) {
+  if (!logs||!logs.length) return;
+  document.getElementById('log-badge').textContent = `${logs.length} registros`;
+  document.getElementById('admin-log').innerHTML = logs.map(log => {
+    const isRepair = log.includes('REPARACIÓN');
+    const parts = log.match(/\[(\d+:\d+:\d+)\] (.+)/);
+    const time = parts?parts[1]:'', msg = parts?parts[2]:log;
+    return `<div class="log-entry ${isRepair?'log-repair':'log-fail'}"><span class="log-time">${time}</span><span>${isRepair?'✓':'✗'}</span><span class="log-msg">${msg}</span></div>`;
+  }).join('');
+}
+
+function updateTypeChart() {
+  const types  = ['PARPADEO_LDR','APAGADA_CRITICA','NO_ENCENDIO_RELE'];
+  const labels = {PARPADEO_LDR:'Parpadeo LDR', APAGADA_CRITICA:'Apagada crítica', NO_ENCENDIO_RELE:'No encendió relé'};
+  const ids    = {PARPADEO_LDR:'bar-parpadeo', APAGADA_CRITICA:'bar-apagada', NO_ENCENDIO_RELE:'bar-rele'};
+  const total  = Object.values(failTypeCounts).reduce((a,b)=>a+b,0);
+  document.getElementById('type-badge').textContent = `${total} eventos`;
+  types.forEach(t => {
+    const el  = document.getElementById(ids[t]);
+    if (!el) return;
+    const cnt = failTypeCounts[t]||0;
+    const pct = total>0 ? Math.round((cnt/total)*100) : 0;
+    el.innerHTML = `<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:10px;color:var(--text2);width:138px;flex-shrink:0;">${labels[t]}</span><div style="flex:1;height:5px;background:var(--bg);border-radius:3px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${FAIL_COLORS[t]};border-radius:3px;transition:width 0.4s;"></div></div><span style="font-size:10px;color:${FAIL_COLORS[t]};width:22px;text-align:right;">${cnt}</span></div>`;
+  });
+}
+
+function renderZoneList() { updateZoneList(); }
+
+// ══════════════════════════════
+// SIM LOG
+// ══════════════════════════════
+function addSimLog(type, nodeId, failType) {
+  const time = new Date().toLocaleTimeString('es-MX');
+  const zone = topology[nodeId]?.zone||'?';
+  const isRepair = type==='repair';
+  const msg = isRepair ? `✓ Nodo #${nodeId} reparado [${zone}]` : `✗ Nodo #${nodeId} — ${failType} [${zone}]`;
+  simLogs.unshift({time, msg, type});
+  if (simLogs.length>60) simLogs.pop();
+  renderSimLog();
+  document.getElementById('sim-fail-type').textContent = isRepair?'—':failType;
+}
+function renderSimLog() {
+  const wrap = document.getElementById('sim-log');
+  if (!simLogs.length) { wrap.innerHTML='<div class="log-empty">Sin eventos.</div>'; return; }
+  wrap.innerHTML = simLogs.map(l=>`<div class="log-entry ${l.type==='repair'?'log-repair':'log-fail'}"><span class="log-time">${l.time}</span><span class="log-msg">${l.msg}</span></div>`).join('');
+}
+function clearSimLog() { simLogs=[]; renderSimLog(); }
+
+// ══════════════════════════════
+// QUICK ACTIONS
+// ══════════════════════════════
+function repairAll() { Object.keys(activeFailures).map(Number).forEach(id => applyRepair(id)); }
+function triggerRandomFail() {
+  const all   = Object.keys(topology).map(Number).filter(id=>!activeFailures.hasOwnProperty(id));
+  const types = ['PARPADEO_LDR','APAGADA_CRITICA','NO_ENCENDIO_RELE'];
+  all.sort(()=>Math.random()-0.5).slice(0,5).forEach(id => applyFail(id, types[Math.floor(Math.random()*3)], false));
+}
+
+// ══════════════════════════════
+// WEATHER
+// ══════════════════════════════
+function updateWeather() {
+  const t=+document.getElementById('w-temp').value, h=+document.getElementById('w-hum').value;
+  const w=+document.getElementById('w-wind').value, r=+document.getElementById('w-rain').value;
+  document.getElementById('wv-temp').textContent = t+'°C';
+  document.getElementById('wv-hum').textContent  = h+'%';
+  document.getElementById('wv-wind').textContent = w+'km/h';
+  document.getElementById('wv-rain').textContent = r+'mm/h';
+  const stress = Math.min(100, Math.round((Math.max(0,Math.abs(t-20)-10)*1.5)+(h>80?(h-80)*0.8:0)+(w>40?(w-40)*0.4:0)+r*0.5));
+  document.getElementById('weather-stress-fill').style.width      = stress+'%';
+  document.getElementById('weather-stress-fill').style.background = stress<30?'var(--accent)':stress<60?'var(--amber)':'var(--red)';
+  document.getElementById('stress-label').textContent = stress+'% estrés';
+}
+
+// ══════════════════════════════
+// TABS
+// ══════════════════════════════
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));
+  document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id==='page-'+tab));
+}
+
+// ══════════════════════════════
+// MODE / FAIL TYPE
+// ══════════════════════════════
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById('btn-fail').className   = 'mode-btn '+(mode==='fail'  ?'active-fail'  :'');
+  document.getElementById('btn-repair').className = 'mode-btn '+(mode==='repair'?'active-repair':'');
+  document.getElementById('sim-mode-label').textContent = mode==='fail'?'▶ MODO FALLO':'▶ MODO REPARAR';
+  document.getElementById('sim-mode-label').style.color = mode==='fail'?'var(--red)':'var(--accent)';
+}
+function selectFailType(type) {
+  currentFailType = type;
+  document.querySelectorAll('.fail-type-btn').forEach(b=>b.classList.remove('selected'));
+  document.getElementById('ft-'+type).classList.add('selected');
+  document.getElementById('sim-fail-type').textContent = type;
+  setMode('fail');
+}
+
+// START
+init();
+</script>
+</body>
+</html>
