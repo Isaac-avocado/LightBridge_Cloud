@@ -399,9 +399,9 @@ async function init() {
   // Animate loop
   requestAnimationFrame(animLoop);
 
-  // Master heartbeat pings: every 4s, super nodes send ping to center
-  setInterval(fireMasterPings, 4000);
-  setTimeout(fireMasterPings, 1200); // first one soon after load
+// Heartbeats regionales: cada 4 segundos, las regiones envían ping al centro
+  setInterval(fireRegionalHeartbeats, 4000);
+  setTimeout(fireRegionalHeartbeats, 1200); // Primer latido al cargar la página
 
   setInterval(fetchState, 1000);
 }
@@ -592,8 +592,8 @@ function getMasterNode() {
   return superNodes[0];
 }
 
-function fireMasterPings() {
-  // Master sends heartbeat to all other super nodes
+function fireRegionalHeartbeats() {
+  // Las regiones (Super Nodos) envían su telemetría al Master Central
   const master = getMasterNode();
   if (master === undefined || !topology[master]) return;
   const mx = topology[master].x, my = topology[master].y;
@@ -602,7 +602,8 @@ function fireMasterPings() {
     if (sn === master) continue;
     const node = topology[sn];
     if (!node) continue;
-    pings.push({ id:pingId++, x1:mx, y1:my, x2:node.x, y2:node.y, progress:0, color:PING_COLORS.master });
+    // CORRECCIÓN: El origen (x1, y1) ahora es el Nodo Regional, y el destino (x2, y2) es el Master.
+    pings.push({ id:pingId++, x1:node.x, y1:node.y, x2:mx, y2:my, progress:0, color:PING_COLORS.master });
   }
 }
 
