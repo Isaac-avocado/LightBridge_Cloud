@@ -16,6 +16,12 @@ MY_ZONE = os.getenv('ZONE', 'ZONA-CENTRAL (Master)')
 MASTER_IP = os.getenv('MASTER_IP', '127.0.0.1')
 MONGO_URI = os.getenv('MONGO_URI', '')
 
+# IPs Regionales para enrutamiento desde el Master
+NORTE_IP = os.getenv('NORTE_IP', '10.0.0.11')
+SUR_IP = os.getenv('SUR_IP', '10.0.0.12')
+ESTE_IP = os.getenv('ESTE_IP', '10.0.0.13')
+OESTE_IP = os.getenv('OESTE_IP', '10.0.0.14')
+
 app = Flask(__name__)
 active_failures = set()
 historical_logs = []
@@ -104,7 +110,7 @@ threading.Thread(target=udp_listener, daemon=True).start()
 def simulate_local_failures():
     time.sleep(10)
     for node_id in my_local_nodes:
-        if random.random() < 0.005: # 0.5% fallo inicio jornada
+        if random.random() < 0.005: 
             msg = f"NO_ENCENDIO_RELE_NODO_{node_id}"
             out_pkt = json.dumps({"type": "sos", "source": node_id, "zone": MY_ZONE, "message": msg})
             dest = "127.0.0.1" if ROLE == 'MASTER' else MASTER_IP
@@ -136,12 +142,12 @@ def control_node():
     action = data.get('action')
     zone = NODE_ZONES.get(target)
     
-    # Enrutamiento: Si el nodo no es mío, mando el paquete a su EC2 correspondiente
-    # (Para simplificar en docker-compose local, simulamos el envío de red)
-    dest_ip = "127.0.0.1" # Si es Master lo procesa local
-    if zone == "ZONA-NORTE": dest_ip = "10.0.0.11"
-    elif zone == "ZONA-SUR": dest_ip = "10.0.0.12"
-    # (Añadir IPs de Este y Oeste cuando las despliegues)
+    # --- ENRUTAMIENTO HACIA LAS MÁQUINAS AWS (IPs Elásticas) ---
+    dest_ip = "127.0.0.1" 
+    if zone == "ZONA-NORTE": dest_ip = NORTE_IP
+    elif zone == "ZONA-SUR": dest_ip = SUR_IP
+    elif zone == "ZONA-ESTE": dest_ip = ESTE_IP
+    elif zone == "ZONA-OESTE": dest_ip = OESTE_IP
     
     cmd = json.dumps({"type": "control", "action": action, "target": target})
     udp_sock.sendto(cmd.encode('utf-8'), (dest_ip, 5001))
@@ -151,5 +157,4 @@ if __name__ == '__main__':
     if ROLE == 'MASTER':
         app.run(host='0.0.0.0', port=80)
     else:
-        # Si es nodo regional, solo mantiene vivo el hilo UDP
         while True: time.sleep(100)
