@@ -24,11 +24,11 @@ OESTE_IP = os.getenv('OESTE_IP', '10.0.0.14')
 
 app = Flask(__name__)
 
-# --- SINCRONIZACIÓN DE ESTADO (MUTEX) ---
-# Este cerrojo evita condiciones de carrera cuando múltiples regiones reportan al mismo milisegundo
+# --- SINCRONIZACIÓN DE ESTADO (MUTEX Y WATCHDOG) ---
 state_lock = threading.Lock()
-active_failures = set()
+active_failures = {}  # Ahora es un diccionario: { node_id: "TIPO_FALLO" }
 historical_logs = []
+last_seen = {}        # Watchdog: { zona: timestamp_ultimo_latido }
 
 # --- BASE DE DATOS (Solo el Master escribe) ---
 alerts_col = None
@@ -61,7 +61,6 @@ while len(SUPER_NODES) < 5 and min_distance > 10:
 zone_names = ["ZONA-CENTRAL (Master)", "ZONA-NORTE", "ZONA-SUR", "ZONA-ESTE", "ZONA-OESTE"]
 NODE_ZONES = {nid: zone_names[SUPER_NODES.index(min(SUPER_NODES, key=lambda sn: math.hypot(coords[nid][0]-coords[sn][0], coords[nid][1]-coords[sn][1])))] for nid in coords.keys()}
 
-# Nodos asignados a esta máquina EC2 específica
 my_local_nodes = [nid for nid, zone in NODE_ZONES.items() if zone == MY_ZONE]
 
 # --- CAPA FÍSICA Y DE RED (UDP MOM) ---
@@ -72,14 +71,15 @@ def log_event(zone, msg, node_id):
     timestamp = time.strftime('%H:%M:%S')
     status = "REPAIRED" if "TEST_OK" in msg else "CRITICAL_FAIL"
     
-    # Bloque de Exclusión Mutua: Garantiza atomicidad en memoria y BD
     with state_lock:
         if status == "REPAIRED":
             if node_id in active_failures: 
-                active_failures.remove(node_id)
+                active_failures.pop(node_id, None)
             log_text = f"[{timestamp}] REPARACIÓN: Nodo {node_id} ({zone})"
         else:
-            active_failures.add(node_id)
+            # Extraemos el tipo específico de fallo del mensaje UDP
+            fail_type = msg.split('_NODO_')[0]
+            active_failures[node_id] = fail_type
             log_text = f"[{timestamp}] FALLO: Nodo {node_id} ({zone})"
         
         historical_logs.insert(0, log_text)
@@ -103,22 +103,41 @@ def udp_listener():
             packet = json.loads(data.decode('utf-8'))
             
             if ROLE == 'MASTER':
+                zone = packet.get('zone', 'UNKNOWN')
+                # Actualiza el Watchdog al recibir CUALQUIER paquete de la región
+                with state_lock:
+                    last_seen[zone] = time.time()
+                
                 if packet.get('type') == 'sos':
                     msg = packet.get('message')
                     node_id = packet.get('source')
-                    log_event(packet.get('zone'), msg, node_id)
+                    log_event(zone, msg, node_id)
             else:
                 if packet.get('type') == 'control':
                     target = packet.get('target')
                     if target in my_local_nodes:
                         action = packet.get('action')
-                        msg = f"TEST_OK_NODO_{target}" if action == 'repair' else f"FALLO_NODO_{target}"
+                        detail = packet.get('detail', 'FALLO_CRITICO')
+                        msg = f"TEST_OK_NODO_{target}" if action == 'repair' else f"{detail}_NODO_{target}"
                         out_pkt = json.dumps({"type": "sos", "source": target, "zone": MY_ZONE, "message": msg})
                         udp_sock.sendto(out_pkt.encode('utf-8'), (MASTER_IP, 5001))
         except Exception as e:
             print(f"[UDP] Error de red: {e}")
 
 threading.Thread(target=udp_listener, daemon=True).start()
+
+# --- HEARTBEAT / WATCHDOG REGIONAL ---
+def regional_heartbeat():
+    while True:
+        if ROLE != 'MASTER':
+            pkt = json.dumps({"type": "heartbeat", "zone": MY_ZONE})
+            udp_sock.sendto(pkt.encode('utf-8'), (MASTER_IP, 5001))
+        else:
+            with state_lock:
+                last_seen[MY_ZONE] = time.time() # El Master siempre se ve a sí mismo online
+        time.sleep(3) # Envía latido cada 3 segundos
+
+threading.Thread(target=regional_heartbeat, daemon=True).start()
 
 # --- SIMULACIÓN AUTÓNOMA ---
 def simulate_local_failures():
@@ -147,9 +166,19 @@ def get_topology():
 
 @app.route('/api/state')
 def get_state():
-    # El bloqueo de lectura asegura que no enviemos datos a medio modificar a la interfaz web
     with state_lock:
-        return jsonify({"active_failures": list(active_failures), "logs": list(historical_logs)})
+        current_time = time.time()
+        zone_status = {}
+        for z in zone_names:
+            # Si pasaron más de 10 segundos sin recibir latidos, la EC2 está caída
+            is_online = (current_time - last_seen.get(z, 0)) < 10
+            zone_status[z] = "online" if is_online else "offline"
+            
+        return jsonify({
+            "active_failures": active_failures, 
+            "logs": list(historical_logs),
+            "zone_status": zone_status
+        })
 
 @app.route('/api/history')
 def get_history():
@@ -166,6 +195,7 @@ def control_node():
     data = request.json
     target = data.get('node_id')
     action = data.get('action')
+    detail = data.get('detail', 'FALLO_CRITICO')
     zone = NODE_ZONES.get(target)
     
     dest_ip = "127.0.0.1" 
@@ -174,7 +204,7 @@ def control_node():
     elif zone == "ZONA-ESTE": dest_ip = ESTE_IP
     elif zone == "ZONA-OESTE": dest_ip = OESTE_IP
     
-    cmd = json.dumps({"type": "control", "action": action, "target": target})
+    cmd = json.dumps({"type": "control", "action": action, "target": target, "detail": detail})
     udp_sock.sendto(cmd.encode('utf-8'), (dest_ip, 5001))
     return jsonify({"status": "Command routed"})
 

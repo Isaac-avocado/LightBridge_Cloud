@@ -56,7 +56,7 @@
   .sim-main { display:flex; flex-direction:column; gap:14px; }
   .sim-side { display:flex; flex-direction:column; gap:14px; }
   
-  /* HISTORY PAGE (NEW) */
+  /* HISTORY PAGE */
   #page-history { display:none; }
   #page-history.active { display:flex; min-height:calc(100vh - 50px); }
   .table-wrap { overflow-y:auto; max-height:calc(100vh - 140px); background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); padding:0; }
@@ -219,6 +219,7 @@
           <span style="font-size:10px;color:#9e8f4a;">● Este</span>
           <span style="font-size:10px;color:#a06640;">● Oeste</span>
           <span style="font-size:10px;color:var(--red);">● Fallo</span>
+          <span style="font-size:10px;color:#555;">● Offline</span>
         </div>
       </div>
       <div class="map-outer" id="admin-map-outer">
@@ -229,7 +230,7 @@
 
     <div class="panel">
       <div class="panel-header">
-        <span class="panel-title">Fallos por tipo</span>
+        <span class="panel-title">Fallos por tipo en tiempo real</span>
         <span class="panel-badge warn" id="type-badge">0 eventos</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
@@ -387,19 +388,19 @@
 // ══════════════════════════════
 let topology   = {};
 let superNodes = [];
-let activeFailures = {};   // nodeId -> failType
+let activeFailures = {};   
+let failTypeCounts = { PARPADEO_LDR:0, APAGADA_CRITICA:0, NO_ENCENDIO_RELE:0 };
+let zoneStatus = {};       // Dict de status: 'online' o 'offline'
+
 let currentMode    = 'fail';
 let currentFailType= 'PARPADEO_LDR';
 let isDrawing  = false;
 let simLogs    = [];
 let repairedCount  = 0;
-let failTypeCounts = { PARPADEO_LDR:0, APAGADA_CRITICA:0, NO_ENCENDIO_RELE:0 };
 
-// Ping animations: { id, x1,y1,x2,y2, progress(0-1), type, color }
 let pings = [];
 let pingId = 0;
 
-// Zoom/pan state per canvas
 const VIEW = {
   admin: { zoom:1, ox:0, oy:0, dragging:false, lastX:0, lastY:0 },
   sim:   { zoom:1, ox:0, oy:0, dragging:false, lastX:0, lastY:0 }
@@ -417,11 +418,10 @@ const FAIL_COLORS = {
   "APAGADA_CRITICA": "#c0504a",
   "NO_ENCENDIO_RELE":"#8b6bbf"
 };
-// Ping colors
 const PING_COLORS = {
-  master:  "#5b8dd9",   // blue — initial heartbeat from master
-  fail:    "#c0504a",   // red  — failure report going to master
-  repair:  "#4db88a"    // green — repair confirmation
+  master:  "#5b8dd9",
+  fail:    "#c0504a",
+  repair:  "#4db88a" 
 };
 
 // ══════════════════════════════
@@ -435,18 +435,19 @@ async function init() {
   topology   = data.nodes;
   superNodes = data.super_nodes;
 
+  // Inicializar zonas como online visualmente
+  for(const z of Object.keys(ZONE_COLORS)) zoneStatus[z] = 'online';
+
   setupCanvas(document.getElementById('scadaCanvas'), 'admin');
   setupCanvas(document.getElementById('simCanvas'),   'sim');
   renderZoneList();
   updateKPIs();
   updateTypeChart();
 
-  // Animate loop
   requestAnimationFrame(animLoop);
 
-  // Heartbeats regionales: cada 4 segundos, las regiones envían ping al centro
   setInterval(fireRegionalHeartbeats, 4000);
-  setTimeout(fireRegionalHeartbeats, 1200); // Primer latido al cargar la página
+  setTimeout(fireRegionalHeartbeats, 1200); 
 
   setInterval(fetchState, 1000);
 }
@@ -472,7 +473,6 @@ function setupCanvas(canvas, role) {
 
   const v = VIEW[role];
 
-  // Zoom via wheel
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
@@ -484,7 +484,6 @@ function setupCanvas(canvas, role) {
     v.zoom = Math.max(0.5, Math.min(20, v.zoom * factor));
   }, { passive:false });
 
-  // Pan via drag
   canvas.addEventListener('mousedown', e => {
     if (e.button === 1 || e.altKey) {
       v.dragging = true; v.lastX = e.clientX; v.lastY = e.clientY;
@@ -516,9 +515,6 @@ function setupCanvas(canvas, role) {
   }
 }
 
-// ══════════════════════════════
-// COORD HELPERS
-// ══════════════════════════════
 function worldToScreen(nx, ny, canvas, v) {
   return [nx * canvas.width * v.zoom + v.ox, (1-ny) * canvas.height * v.zoom + v.oy];
 }
@@ -550,8 +546,9 @@ function drawCanvas(canvas, role) {
   for (const id in topology) {
     const node = topology[id];
     const nid  = parseInt(id);
-    const isFail      = activeFailures.hasOwnProperty(nid);
-    const isSuperNode = superNodes.includes(nid);
+    const isFail        = activeFailures.hasOwnProperty(nid);
+    const isSuperNode   = superNodes.includes(nid);
+    const isOfflineZone = zoneStatus[node.zone] === 'offline';
 
     const [x, y] = worldToScreen(node.x, node.y, canvas, v);
 
@@ -559,7 +556,11 @@ function drawCanvas(canvas, role) {
       ? FAIL_COLORS[activeFailures[nid]] || '#c0504a'
       : ZONE_COLORS[node.zone] || '#5b7080';
 
-    if (isFail && activeFailures[nid] === 'PARPADEO_LDR') {
+    if (isOfflineZone && !isSuperNode) {
+        color = '#333344'; // Los nodos normales se oscurecen si su AWS está caído
+    }
+
+    if (isFail && activeFailures[nid] === 'PARPADEO_LDR' && !isOfflineZone) {
       const t = (Math.sin(now / 200) + 1) / 2;
       ctx.globalAlpha = 0.25 + t * 0.75;
     }
@@ -567,23 +568,31 @@ function drawCanvas(canvas, role) {
     const r = isSuperNode ? (isFail ? 5.5 : 5) : (isFail ? 3.5 : 2);
 
     if (isSuperNode) {
+      // Halo
       ctx.beginPath();
       ctx.arc(x, y, r + 4, 0, 2*Math.PI);
-      ctx.fillStyle = color + '20';
+      ctx.fillStyle = isOfflineZone ? 'rgba(255,50,50,0.4)' : color + '20';
+      ctx.fill();
+
+      // Centro
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, 2*Math.PI);
+      ctx.fillStyle = isOfflineZone ? '#ff3232' : color;
+      ctx.fill();
+    } else {
+      if (isFail && !isOfflineZone) {
+        ctx.beginPath();
+        ctx.arc(x, y, r + 2, 0, 2*Math.PI);
+        ctx.strokeStyle = color + '50';
+        ctx.lineWidth   = 1;
+        ctx.stroke();
+      }
+
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, 2*Math.PI);
+      ctx.fillStyle = color;
       ctx.fill();
     }
-    if (isFail) {
-      ctx.beginPath();
-      ctx.arc(x, y, r + 2, 0, 2*Math.PI);
-      ctx.strokeStyle = color + '50';
-      ctx.lineWidth   = 1;
-      ctx.stroke();
-    }
-
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, 2*Math.PI);
-    ctx.fillStyle = color;
-    ctx.fill();
     ctx.globalAlpha = 1;
   }
 
@@ -637,7 +646,11 @@ function fireRegionalHeartbeats() {
     if (sn === master) continue;
     const node = topology[sn];
     if (!node) continue;
-    pings.push({ id:pingId++, x1:node.x, y1:node.y, x2:mx, y2:my, progress:0, color:PING_COLORS.master });
+    
+    // Si la máquina EC2 en AWS está caída, no disparamos latidos visuales falsos
+    if (zoneStatus[node.zone] === 'online') {
+        pings.push({ id:pingId++, x1:node.x, y1:node.y, x2:mx, y2:my, progress:0, color:PING_COLORS.master });
+    }
   }
 }
 
@@ -646,7 +659,6 @@ function fireFailPing(nodeId) {
   if (!node) return;
   const centralMaster = getMasterNode();
   const mst = topology[centralMaster];
-  
   const zoneSupId = superNodes.find(sn => topology[sn]?.zone === node.zone);
   const zs = topology[zoneSupId];
 
@@ -671,7 +683,6 @@ function fireRepairPing(nodeId) {
   const node = topology[nodeId];
   const centralMaster = getMasterNode();
   const mst = topology[centralMaster];
-  
   const zoneSupId = superNodes.find(sn => topology[sn]?.zone === node.zone);
   const zs = topology[zoneSupId];
 
@@ -697,16 +708,33 @@ function fireRepairPing(nodeId) {
 // ══════════════════════════════
 async function fetchState() {
   try {
-    const data = await fetch('/api/state').then(r => r.json());
-    const serverFails = new Set(data.active_failures.map(Number));
-    for (const id of serverFails) {
-      if (!activeFailures.hasOwnProperty(id))
-        activeFailures[id] = 'NO_ENCENDIO_RELE';
+    const res = await fetch('/api/state');
+    if (!res.ok) throw new Error("Servidor Central Caído");
+    const data = await res.json();
+    
+    zoneStatus = data.zone_status || {};
+
+    // Sincronización Estricta de la BD en memoria (Backend)
+    const serverFails = data.active_failures; 
+    activeFailures = {};
+    failTypeCounts = { PARPADEO_LDR:0, APAGADA_CRITICA:0, NO_ENCENDIO_RELE:0 };
+    
+    for (const [idStr, failType] of Object.entries(serverFails)) {
+        const id = parseInt(idStr);
+        activeFailures[id] = failType;
+        failTypeCounts[failType] = (failTypeCounts[failType] || 0) + 1;
     }
+
     renderAdminLog(data.logs);
     updateKPIs();
     updateZoneList();
-  } catch(e) {}
+    updateTypeChart();
+    
+  } catch(e) {
+    // Si el fetch falla, el Master entero está offline
+    Object.keys(ZONE_COLORS).forEach(z => zoneStatus[z] = 'offline');
+    updateZoneList();
+  }
 }
 
 // ══════════════════════════════
@@ -759,7 +787,7 @@ function applyFail(nodeId, type, silent) {
   if (!silent) addSimLog('fail', nodeId, type);
   fireFailPing(nodeId);
   updateKPIs(); updateZoneList(); updateTypeChart();
-  sendControlEvent(nodeId, 'fail');
+  sendControlEvent(nodeId, 'fail', type);
 }
 
 function applyRepair(nodeId) {
@@ -773,9 +801,13 @@ function applyRepair(nodeId) {
   sendControlEvent(nodeId, 'repair');
 }
 
-async function sendControlEvent(nodeId, action) {
+async function sendControlEvent(nodeId, action, detail=null) {
   try {
-    await fetch('/api/control', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({node_id:nodeId, action}) });
+    await fetch('/api/control', { 
+        method:'POST', 
+        headers:{'Content-Type':'application/json'}, 
+        body:JSON.stringify({node_id:nodeId, action:action, detail:detail}) 
+    });
   } catch(e) {}
 }
 
@@ -839,18 +871,18 @@ function updateKPIs() {
   const total = Object.keys(topology).length;
   const fails  = Object.keys(activeFailures).length;
   const ok     = total - fails;
-  const avail  = total>0 ? Math.round((ok/total)*100) : 100;
+  
+  // Disponibilidad de Alta Precisión (2 Decimales)
+  const avail  = total>0 ? ((ok/total)*100).toFixed(2) : "100.00";
+  
   document.getElementById('kpi-total').textContent = total||'--';
   document.getElementById('kpi-ok').textContent    = total?ok:'--';
   document.getElementById('kpi-fail').textContent  = fails;
   document.getElementById('kpi-avail').textContent = total?avail+'%':'--%';
   document.getElementById('kpi-fail').className    = 'stat-value '+(fails>0?'red':'green');
-  document.getElementById('kpi-avail').className   = 'stat-value '+(avail>=95?'green':avail>=80?'amber':'red');
+  document.getElementById('kpi-avail').className   = 'stat-value '+(parseFloat(avail)>=95?'green':parseFloat(avail)>=80?'amber':'red');
   document.getElementById('sim-fail-count').textContent = fails;
   document.getElementById('sim-repaired').textContent   = repairedCount;
-  const pb = document.getElementById('zone-badge');
-  pb.textContent = fails>0?`${fails} alertas`:'Todo OK';
-  pb.className   = 'panel-badge '+(fails>0?'danger':'');
 }
 
 function updateZoneList() {
@@ -859,12 +891,38 @@ function updateZoneList() {
   for (const id in topology)       { const z=topology[id].zone;        totalByZone[z]=(totalByZone[z]||0)+1; }
   const ul = document.getElementById('zone-list');
   ul.innerHTML = '';
+  
+  let anyOffline = false;
+
   for (const [zone, color] of Object.entries(ZONE_COLORS)) {
     const f=failsByZone[zone]||0, t=totalByZone[zone]||0;
+    const status = zoneStatus[zone] || 'offline';
+    
+    if(status === 'offline') anyOffline = true;
+
     const d = document.createElement('div');
     d.className = 'zone-item';
-    d.innerHTML = `<div class="zone-dot" style="background:${color}"></div><div class="zone-name">${zone.replace(' (Master)','')}</div><div class="zone-count ${f>0?'zone-fail':'zone-ok'}">${f>0?f+' caídos':'OK'} <span style="color:var(--text3);font-weight:400;font-size:9px;">/ ${t}</span></div>`;
+    
+    if (status === 'offline') {
+        d.innerHTML = `<div class="zone-dot" style="background:#444"></div>
+                       <div class="zone-name" style="color:#666; text-decoration:line-through;">${zone.replace(' (Master)','')}</div>
+                       <div class="zone-count" style="color:var(--red); font-size:10px;">🔌 OFFLINE</div>`;
+    } else {
+        d.innerHTML = `<div class="zone-dot" style="background:${color}"></div>
+                       <div class="zone-name">${zone.replace(' (Master)','')}</div>
+                       <div class="zone-count ${f>0?'zone-fail':'zone-ok'}">${f>0?f+' caídos':'OK'} <span style="color:var(--text3);font-weight:400;font-size:9px;">/ ${t}</span></div>`;
+    }
     ul.appendChild(d);
+  }
+  
+  const pb = document.getElementById('zone-badge');
+  if (anyOffline) {
+      pb.textContent = 'ERROR DE RED';
+      pb.className   = 'panel-badge danger';
+  } else {
+      const totalFails = Object.keys(activeFailures).length;
+      pb.textContent = totalFails>0?`${totalFails} alertas`:'Todo OK';
+      pb.className   = 'panel-badge '+(totalFails>0?'danger':'');
   }
 }
 
@@ -949,7 +1007,6 @@ function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));
   document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id==='page-'+tab));
   
-  // Si entra a la pestaña de base de datos, cargar automáticamente los datos
   if(tab === 'history') {
     fetchDBHistory();
   }
