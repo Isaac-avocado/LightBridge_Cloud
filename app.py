@@ -23,6 +23,10 @@ ESTE_IP = os.getenv('ESTE_IP', '10.0.0.13')
 OESTE_IP = os.getenv('OESTE_IP', '10.0.0.14')
 
 app = Flask(__name__)
+
+# --- SINCRONIZACIÓN DE ESTADO (MUTEX) ---
+# Este cerrojo evita condiciones de carrera cuando múltiples regiones reportan al mismo milisegundo
+state_lock = threading.Lock()
 active_failures = set()
 historical_logs = []
 
@@ -66,40 +70,53 @@ udp_sock.bind(("0.0.0.0", 5001))
 
 def log_event(zone, msg, node_id):
     timestamp = time.strftime('%H:%M:%S')
-    if "TEST_OK" in msg:
-        if node_id in active_failures: active_failures.remove(node_id)
-        log_text = f"[{timestamp}] REPARACIÓN: Nodo {node_id} ({zone})"
-        status = "REPAIRED"
-    else:
-        active_failures.add(node_id)
-        log_text = f"[{timestamp}] FALLO: Nodo {node_id} ({zone})"
-        status = "CRITICAL_FAIL"
+    status = "REPAIRED" if "TEST_OK" in msg else "CRITICAL_FAIL"
     
-    historical_logs.insert(0, log_text)
-    if len(historical_logs) > 30: historical_logs.pop()
+    # Bloque de Exclusión Mutua: Garantiza atomicidad en memoria y BD
+    with state_lock:
+        if status == "REPAIRED":
+            if node_id in active_failures: 
+                active_failures.remove(node_id)
+            log_text = f"[{timestamp}] REPARACIÓN: Nodo {node_id} ({zone})"
+        else:
+            active_failures.add(node_id)
+            log_text = f"[{timestamp}] FALLO: Nodo {node_id} ({zone})"
+        
+        historical_logs.insert(0, log_text)
+        if len(historical_logs) > 30: 
+            historical_logs.pop()
 
-    if alerts_col is not None:
-        alerts_col.insert_one({"zone": zone, "message": msg, "node_id": node_id, "status": status, "timestamp": datetime.utcnow()})
+        if alerts_col is not None:
+            alerts_col.insert_one({
+                "zone": zone, 
+                "message": msg, 
+                "node_id": node_id, 
+                "status": status, 
+                "timestamp": datetime.utcnow()
+            })
 
 def udp_listener():
     print(f"[{ROLE}] 📡 Escuchando UDP en puerto 5001 (Zona: {MY_ZONE})")
     while True:
-        data, addr = udp_sock.recvfrom(2048)
-        packet = json.loads(data.decode('utf-8'))
-        
-        if ROLE == 'MASTER':
-            if packet.get('type') == 'sos':
-                msg = packet.get('message')
-                node_id = packet.get('source')
-                log_event(packet.get('zone'), msg, node_id)
-        else:
-            if packet.get('type') == 'control':
-                target = packet.get('target')
-                if target in my_local_nodes:
-                    action = packet.get('action')
-                    msg = f"TEST_OK_NODO_{target}" if action == 'repair' else f"FALLO_NODO_{target}"
-                    out_pkt = json.dumps({"type": "sos", "source": target, "zone": MY_ZONE, "message": msg})
-                    udp_sock.sendto(out_pkt.encode('utf-8'), (MASTER_IP, 5001))
+        try:
+            data, addr = udp_sock.recvfrom(2048)
+            packet = json.loads(data.decode('utf-8'))
+            
+            if ROLE == 'MASTER':
+                if packet.get('type') == 'sos':
+                    msg = packet.get('message')
+                    node_id = packet.get('source')
+                    log_event(packet.get('zone'), msg, node_id)
+            else:
+                if packet.get('type') == 'control':
+                    target = packet.get('target')
+                    if target in my_local_nodes:
+                        action = packet.get('action')
+                        msg = f"TEST_OK_NODO_{target}" if action == 'repair' else f"FALLO_NODO_{target}"
+                        out_pkt = json.dumps({"type": "sos", "source": target, "zone": MY_ZONE, "message": msg})
+                        udp_sock.sendto(out_pkt.encode('utf-8'), (MASTER_IP, 5001))
+        except Exception as e:
+            print(f"[UDP] Error de red: {e}")
 
 threading.Thread(target=udp_listener, daemon=True).start()
 
@@ -130,15 +147,15 @@ def get_topology():
 
 @app.route('/api/state')
 def get_state():
-    return jsonify({"active_failures": list(active_failures), "logs": historical_logs})
+    # El bloqueo de lectura asegura que no enviemos datos a medio modificar a la interfaz web
+    with state_lock:
+        return jsonify({"active_failures": list(active_failures), "logs": list(historical_logs)})
 
-# --- NUEVA RUTA PARA CONSULTAR EL HISTORIAL DE MONGODB ---
 @app.route('/api/history')
 def get_history():
     if alerts_col is None:
         return jsonify({"error": "No hay conexión a la Base de Datos MongoDB.", "data": []})
     try:
-        # Obtenemos los últimos 200 registros de la base de datos, del más nuevo al más viejo
         records = list(alerts_col.find({}, {"_id": 0}).sort("timestamp", -1).limit(200))
         return jsonify({"data": records})
     except Exception as e:
