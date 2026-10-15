@@ -1,0 +1,123 @@
+name: Deploy LightBridge to AWS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: 
+
+jobs:
+  deploy_master:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy Master Node
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.MASTER_IP }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd LightBridge_Cloud
+            git pull origin main
+            sudo docker stop master_node || true
+            sudo docker rm master_node || true
+            sudo docker build -t lightbridge .
+            sudo docker run -d --name master_node \
+              -p 80:80 \
+              -p 5001:5001/udp \
+              -e ROLE="MASTER" \
+              -e ZONE="ZONA-CENTRAL (Master)" \
+              -e MONGO_URI="${{ secrets.MONGO_URI }}" \
+              -e NORTE_IP="${{ secrets.NORTE_IP }}" \
+              -e SUR_IP="${{ secrets.SUR_IP }}" \
+              -e ESTE_IP="${{ secrets.ESTE_IP }}" \
+              -e OESTE_IP="${{ secrets.OESTE_IP }}" \
+              lightbridge
+
+  deploy_region_norte:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy Zona Norte
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.NORTE_IP }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd LightBridge_Cloud
+            git pull origin main
+            sudo docker stop region_norte || true
+            sudo docker rm region_norte || true
+            sudo docker build -t lightbridge .
+            sudo docker run -d --name region_norte \
+              -p 5001:5001/udp \
+              -e ROLE="REGION" \
+              -e ZONE="ZONA-NORTE" \
+              -e MASTER_IP="${{ secrets.MASTER_IP }}" \
+              lightbridge
+
+  deploy_region_sur:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy Zona Sur
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SUR_IP }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd LightBridge_Cloud
+            git pull origin main
+            sudo docker stop region_sur || true
+            sudo docker rm region_sur || true
+            sudo docker build -t lightbridge .
+            sudo docker run -d --name region_sur \
+              -p 5001:5001/udp \
+              -e ROLE="REGION" \
+              -e ZONE="ZONA-SUR" \
+              -e MASTER_IP="${{ secrets.MASTER_IP }}" \
+              lightbridge
+
+  deploy_region_este:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy Zona Este
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.ESTE_IP }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd LightBridge_Cloud
+            git pull origin main
+            sudo docker stop region_este || true
+            sudo docker rm region_este || true
+            sudo docker build -t lightbridge .
+            sudo docker run -d --name region_este \
+              -p 5001:5001/udp \
+              -e ROLE="REGION" \
+              -e ZONE="ZONA-ESTE" \
+              -e MASTER_IP="${{ secrets.MASTER_IP }}" \
+              lightbridge
+
+  deploy_region_oeste:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy Zona Oeste
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.OESTE_IP }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd LightBridge_Cloud
+            git pull origin main
+            sudo docker stop region_oeste || true
+            sudo docker rm region_oeste || true
+            sudo docker build -t lightbridge .
+            sudo docker run -d --name region_oeste \
+              -p 5001:5001/udp \
+              -e ROLE="REGION" \
+              -e ZONE="ZONA-OESTE" \
+              -e MASTER_IP="${{ secrets.MASTER_IP }}" \
+              lightbridge

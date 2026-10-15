@@ -1,0 +1,81 @@
+services:
+  master_central:
+    build: .
+    container_name: lightbridge_master
+    environment:
+      ROLE: MASTER
+      ZONE: ZONA-CENTRAL (Master)
+      LOCAL_MODE: "false"
+      PORT: "5000"
+      NORTE_IP: 10.0.0.11
+      SUR_IP: 10.0.0.12
+      ESTE_IP: 10.0.0.13
+      OESTE_IP: 10.0.0.14
+      LOCAL_DB_PATH: /data/lightbridge_local.db
+    ports:
+      - "5000:5000"
+      - "5001:5001/udp"
+    volumes:
+      - lightbridge_data:/data
+    networks:
+      vpc_simulada:
+        ipv4_address: 10.0.0.10
+
+  region_norte:
+    build: .
+    container_name: lightbridge_norte
+    environment:
+      ROLE: REGION
+      ZONE: ZONA-NORTE
+      LOCAL_MODE: "false"
+      MASTER_IP: 10.0.0.10
+    networks:
+      vpc_simulada:
+        ipv4_address: 10.0.0.11
+
+  region_sur:
+    build: .
+    container_name: lightbridge_sur
+    environment:
+      ROLE: REGION
+      ZONE: ZONA-SUR
+      LOCAL_MODE: "false"
+      MASTER_IP: 10.0.0.10
+    networks:
+      vpc_simulada:
+        ipv4_address: 10.0.0.12
+
+  region_este:
+    build: .
+    container_name: lightbridge_este
+    environment:
+      ROLE: REGION
+      ZONE: ZONA-ESTE
+      LOCAL_MODE: "false"
+      MASTER_IP: 10.0.0.10
+    networks:
+      vpc_simulada:
+        ipv4_address: 10.0.0.13
+
+  region_oeste:
+    build: .
+    container_name: lightbridge_oeste
+    environment:
+      ROLE: REGION
+      ZONE: ZONA-OESTE
+      LOCAL_MODE: "false"
+      MASTER_IP: 10.0.0.10
+    networks:
+      vpc_simulada:
+        ipv4_address: 10.0.0.14
+
+volumes:
+  lightbridge_data:
+
+networks:
+  vpc_simulada:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+
