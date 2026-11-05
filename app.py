@@ -6,6 +6,8 @@ import random
 import math
 import threading
 import sqlite3
+from event_store import EventStore
+from physical_api import configured_nodes, register_physical_api
 import pandas as pd
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request
@@ -32,7 +34,7 @@ ALLOWED_ACTIONS = {"fail", "repair"}
 ALLOWED_FAILURE_TYPES = {"PARPADEO_LDR", "APAGADA_CRITICA", "NO_ENCENDIO_RELE"}
 
 # --- SINCRONIZACIÓN DE ESTADO (MUTEX Y WATCHDOG) ---
-state_lock = threading.Lock()
+state_lock = threading.RLock()
 active_failures = {}  # Ahora es un diccionario: { node_id: "TIPO_FALLO" }
 historical_logs = []
 last_seen = {}        # Watchdog: { zona: timestamp_ultimo_latido }
@@ -40,31 +42,13 @@ last_seen = {}        # Watchdog: { zona: timestamp_ultimo_latido }
 # --- BASE DE DATOS (Solo el Master escribe) ---
 alerts_col = None
 local_db_enabled = False
-if ROLE == 'MASTER' and MONGO_URI:
+if ROLE == 'MASTER' and MONGO_URI and not LOCAL_MODE:
     try:
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         alerts_col = client['lightbridge_scada']['network_events']
         print("[DB] ✅ Conectado a MongoDB Atlas")
     except Exception as e:
         print(f"[DB] ❌ Error conectando a Mongo: {e}")
-
-if ROLE == 'MASTER' and alerts_col is None:
-    try:
-        with sqlite3.connect(LOCAL_DB_PATH) as conn:
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS network_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    zone TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    node_id INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    timestamp TEXT NOT NULL
-                )
-            ''')
-        local_db_enabled = True
-        print(f"[DB] ✅ Historial local SQLite: {LOCAL_DB_PATH}")
-    except Exception as e:
-        print(f"[DB] ❌ Error preparando SQLite: {e}")
 
 # --- TOPOLOGÍA ---
 nodes_df = pd.read_csv('main_network_nodes.csv')
@@ -87,15 +71,81 @@ while len(SUPER_NODES) < 5 and min_distance > 10:
 zone_names = ["ZONA-CENTRAL (Master)", "ZONA-NORTE", "ZONA-SUR", "ZONA-ESTE", "ZONA-OESTE"]
 NODE_ZONES = {nid: zone_names[SUPER_NODES.index(min(SUPER_NODES, key=lambda sn: math.hypot(coords[nid][0]-coords[sn][0], coords[nid][1]-coords[sn][1])))] for nid in coords.keys()}
 
+# Physical registrations are validated before starting simulation threads.
+physical_configuration_valid = True
+try:
+    physical_nodes = configured_nodes(coords)
+except (ValueError, TypeError):
+    physical_nodes = []
+    physical_configuration_valid = False
+    app.logger.error('Invalid physical registration configuration')
+physical_ids = {node['node_id'] for node in physical_nodes}
+physical_state = {}
+physical_last_seen = {}
+physical_store = None
+if ROLE == 'MASTER':
+    try:
+        physical_store = EventStore(LOCAL_DB_PATH, physical_nodes)
+        local_db_enabled = True
+    except Exception:
+        app.logger.error('Physical SQLite initialization failed')
+
+
+def apply_physical_event(event, restored=False):
+    nid = event['node_id']
+    physical_last_seen[nid] = event.get('last_received_at', event['received_at'])
+    if not event['state_applied']:
+        # Late events are persisted, but do not replace the current observation.
+        return
+    physical_state[nid] = dict(event)
+    if event['alert_type'] == 'NORMAL':
+        active_failures.pop(nid, None)
+    else:
+        active_failures[nid] = event['alert_type']
+    if event['network_event_id'] and not restored:
+        action = 'REPARACIÓN' if event['alert_type'] == 'NORMAL' else 'FALLO'
+        historical_logs.insert(0, f"[{time.strftime('%H:%M:%S')}] {action}: Nodo {nid} ({event['zone']}) [physical]")
+        del historical_logs[30:]
+
+
+if physical_store:
+    for node in physical_nodes:
+        previous = physical_store.latest(node)
+        if previous:
+            apply_physical_event(previous, restored=True)
+
+register_physical_api(app, physical_store if physical_configuration_valid else None, physical_nodes, NODE_ZONES,
+                      state_lock, apply_physical_event)
+
+
+def physical_snapshot():
+    result = []
+    for node in physical_nodes:
+        event = physical_state.get(node['node_id'])
+        seen = physical_last_seen.get(node['node_id'])
+        age = (datetime.utcnow() - datetime.fromisoformat(seen.rstrip('Z'))).total_seconds() if seen else None
+        online = age is not None and age <= 30
+        result.append({**node, 'last_seen': seen,
+                       'online': online, 'status': ('online' if online else 'offline') if event else 'no_data',
+                       'current_alert': event['alert_type'] if event else None,
+                       'ldr_state': event['ldr_state'] if event else None})
+    return result
+
+
 my_local_nodes = [nid for nid, zone in NODE_ZONES.items() if zone == MY_ZONE]
 if LOCAL_MODE and ROLE == 'MASTER':
     my_local_nodes = list(coords.keys())
 
 # --- CAPA FÍSICA Y DE RED (UDP MOM) ---
+my_local_nodes = [nid for nid in my_local_nodes if nid not in physical_ids]
+
 udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-udp_sock.bind(("0.0.0.0", 5001))
+if os.getenv("LIGHTBRIDGE_TESTING") != "1":
+    udp_sock.bind(("0.0.0.0", 5001))
 
 def log_event(zone, msg, node_id):
+    if int(node_id) in physical_ids:
+        return
     timestamp = time.strftime('%H:%M:%S')
     status = "REPAIRED" if "TEST_OK" in msg else "CRITICAL_FAIL"
 
@@ -123,6 +173,7 @@ def log_event(zone, msg, node_id):
                 "message": msg,
                 "node_id": node_id,
                 "status": status,
+                "source": "simulated",
                 "timestamp": datetime.utcnow()
             })
         except Exception as e:
@@ -132,8 +183,8 @@ def log_event(zone, msg, node_id):
             with sqlite3.connect(LOCAL_DB_PATH) as conn:
                 conn.execute(
                     '''INSERT INTO network_events
-                       (zone, message, node_id, status, timestamp)
-                       VALUES (?, ?, ?, ?, ?)''',
+                       (zone, message, node_id, status, timestamp, source)
+                       VALUES (?, ?, ?, ?, ?, 'simulated')''',
                     (zone, msg, node_id, status, datetime.utcnow().isoformat() + 'Z')
                 )
         except Exception as e:
@@ -168,7 +219,8 @@ def udp_listener():
         except Exception as e:
             print(f"[UDP] Error de red: {e}")
 
-threading.Thread(target=udp_listener, daemon=True).start()
+if os.getenv('LIGHTBRIDGE_TESTING') != '1':
+    threading.Thread(target=udp_listener, daemon=True).start()
 
 # --- HEARTBEAT / WATCHDOG REGIONAL ---
 def regional_heartbeat():
@@ -186,7 +238,8 @@ def regional_heartbeat():
                     last_seen[MY_ZONE] = time.time()
         time.sleep(3) # Envía latido cada 3 segundos
 
-threading.Thread(target=regional_heartbeat, daemon=True).start()
+if os.getenv('LIGHTBRIDGE_TESTING') != '1':
+    threading.Thread(target=regional_heartbeat, daemon=True).start()
 
 # --- SIMULACIÓN AUTÓNOMA ---
 def simulate_local_failures():
@@ -199,7 +252,8 @@ def simulate_local_failures():
             udp_sock.sendto(out_pkt.encode('utf-8'), (dest, 5001))
             time.sleep(random.uniform(0.1, 0.5))
 
-threading.Thread(target=simulate_local_failures, daemon=True).start()
+if os.getenv('LIGHTBRIDGE_TESTING') != '1':
+    threading.Thread(target=simulate_local_failures, daemon=True).start()
 
 # --- SERVIDOR WEB SCADA (Solo corre en el Master) ---
 @app.route('/')
@@ -233,12 +287,14 @@ def build_state_snapshot():
         }
         failures = dict(active_failures)
         logs = list(historical_logs)
+        physical = physical_snapshot()
 
     failure_types = {}
     for failure_type in failures.values():
         failure_types[failure_type] = failure_types.get(failure_type, 0) + 1
 
     return {
+        "physical_nodes": physical,
         "active_failures": failures,
         "logs": logs,
         "zone_status": zone_status,
@@ -286,7 +342,7 @@ def get_history():
             with sqlite3.connect(LOCAL_DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute('''
-                    SELECT zone, message, node_id, status, timestamp
+                    SELECT zone, message, node_id, status, timestamp, source
                     FROM network_events
                     ORDER BY id DESC
                     LIMIT 200
@@ -308,6 +364,9 @@ def control_node():
         target = int(data.get('node_id'))
     except (TypeError, ValueError):
         return jsonify({"error": "node_id debe ser un número entero."}), 400
+
+    if target in physical_ids:
+        return jsonify(error={'code': 'physical_node_managed'}), 409
 
     action = data.get('action')
     detail = data.get('detail', 'APAGADA_CRITICA')

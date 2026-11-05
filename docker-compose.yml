@@ -3,6 +3,12 @@ services:
     build: .
     container_name: lightbridge_local
     environment:
+      PHYSICAL_API_KEY: ${PHYSICAL_API_KEY:-}
+      PHYSICAL_GATEWAY_ID: ${PHYSICAL_GATEWAY_ID:-esp32-master-01}
+      PHYSICAL_NODE_1_MAC: ${PHYSICAL_NODE_1_MAC:-02:00:00:00:00:01}
+      PHYSICAL_NODE_1_ID: ${PHYSICAL_NODE_1_ID:-1}
+      PHYSICAL_NODE_2_MAC: ${PHYSICAL_NODE_2_MAC:-02:00:00:00:00:02}
+      PHYSICAL_NODE_2_ID: ${PHYSICAL_NODE_2_ID:-25}
       ROLE: MASTER
       ZONE: ZONA-CENTRAL (Master)
       LOCAL_MODE: "true"

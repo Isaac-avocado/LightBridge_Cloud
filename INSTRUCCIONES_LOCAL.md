@@ -68,3 +68,63 @@ Este y Oeste:
 ```powershell
 docker compose -f docker-compose.distributed.yml up --build
 ```
+
+## Fase 3: recepcion fisica (prototipo)
+
+Copia `.env.example` a `.env` y establece una clave aleatoria privada en
+`PHYSICAL_API_KEY`. El ejemplo deja la clave vacia: la ruta devuelve 503 hasta
+configurarla. `.env` esta excluido de Git y del contexto Docker. No compartas
+la salida de `docker compose config` cuando contenga una clave real.
+
+Configura `PHYSICAL_GATEWAY_ID`, `PHYSICAL_NODE_1_MAC`, `PHYSICAL_NODE_1_ID`,
+`PHYSICAL_NODE_2_MAC` y `PHYSICAL_NODE_2_ID`. Valores provisionales:
+`esp32-master-01`, MAC `02:00:00:00:00:01` -> nodo 1 y MAC
+`02:00:00:00:00:02` -> nodo 25. No cambies los CSV. Usa un solo proceso Flask.
+Cambiar una asignacion no elimina su historial; un dispositivo nuevo empieza
+sin datos y la secuencia no debe reutilizarse para la misma MAC y gateway.
+
+El ESP32 envia POST a `http://IP_LOCAL_DE_LA_PC:5000/api/physical/events`,
+con `Content-Type: application/json` y `X-Device-Key`. La PC y el ESP32 deben
+poder comunicarse en la LAN. Permite TCP 5000 en Firewall de Windows solamente
+en red privada, idealmente desde la IP del gateway. No publiques el puerto en
+Internet. HTTP no cifra la clave; HTTPS y credenciales por dispositivo quedan
+pendientes para produccion. No se implementa firmware en esta etapa.
+
+Contrato (todos los campos obligatorios; sin campos extra):
+
+```json
+{"protocol_version":1,"gateway_id":"esp32-master-01","node_mac":"02:00:00:00:00:01","ldr_state":"DARK","alert_type":"APAGADA_CRITICA","flicker_count":0,"sequence":1001,"uptime_ms":60000}
+```
+
+Alertas: APAGADA_CRITICA, PARPADEO_LDR y NORMAL. NORMAL repara; no existe
+soporte fisico para NO_ENCENDIO_RELE. LIGHT/DARK son observaciones semanticas;
+la polaridad electrica y los umbrales deben calibrarse en firmware. Esta etapa
+valida el vocabulario, sin inferir si la luminaria deberia estar encendida.
+Secuencia y uptime: enteros uint32; flicker_count: uint16; booleanos rechazados.
+La secuencia debe ser durable y creciente por MAC y gateway, incluso al reiniciar.
+Los reintentos conservan el contenido y la secuencia originales. Eventos nuevos
+atrasados se guardan sin revertir el estado actual. La recepcion esta limitada a
+2 KiB. No hay limitador de frecuencia todavia; usar solo en una LAN controlada.
+
+Respuestas: 201 accepted, 200 duplicate, 400 JSON invalido, 401 clave incorrecta,
+404 MAC desconocida, 409 sequence_conflict, 415 Content-Type incorrecto,
+422 campos invalidos, 503 sin configuracion, 500 fallo interno.
+
+SQLite migra automaticamente sin borrar historial. Eventos anteriores: legacy;
+controles virtuales: simulated; transiciones fisicas: physical. Los reportes
+normales y fallos repetidos se conservan en physical_events sin inundar el
+historial comun. El estado fisico se reconstruye al iniciar. Los nodos fisicos
+estan reservados en el backend: controles y reparaciones masivas del dashboard
+no pueden alterarlos, aunque la interfaz todavia no los distingue visualmente.
+No se han cambiado los botones ni sus actualizaciones optimistas del navegador;
+el siguiente sondeo recupera el estado autorizado por el servidor.
+
+Pruebas sin hardware (base temporal, sin volumen de produccion):
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Con las dependencias disponibles tambien en Docker, montar el proyecto en
+`/app`, ejecutar ese mismo comando y no montar el volumen de datos real.
+No ejecutar `docker compose down -v`: eliminaria el historial persistente.
