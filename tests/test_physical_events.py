@@ -239,6 +239,36 @@ class PhysicalTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     configured_nodes(self.m.coords)
 
+    def test_dashboard_physical_contract(self):
+        required = {'node_id','node_mac','label','last_seen','online','status','current_alert','ldr_state'}
+        for path in ('/api/state','/api/dashboard'):
+            with self.subTest(path=path):
+                initial = self.client.get(path).json['physical_nodes']
+                self.assertEqual({node['node_id'] for node in initial}, {1,25})
+                for node in initial:
+                    self.assertTrue(required <= node.keys())
+                    self.assertEqual(node['status'],'no_data')
+                    self.assertIsNone(node['last_seen'])
+                    self.assertFalse(node['online'])
+        self.post()
+        state = self.client.get('/api/state').json['physical_nodes'][0]
+        dashboard = self.client.get('/api/dashboard').json['physical_nodes'][0]
+        self.assertEqual(state,dashboard)
+        self.assertTrue(state['online'])
+        self.assertEqual(state['ldr_state'],'DARK')
+        self.assertEqual(state['current_alert'],'APAGADA_CRITICA')
+        self.assertIn('T',state['last_seen'])
+        topology = self.client.get('/api/topology').json['nodes']
+        self.assertEqual(topology['1']['zone'],'ZONA-NORTE')
+        self.assertEqual(topology['25']['zone'],'ZONA-SUR')
+        self.payload.update(sequence=1002,alert_type='NORMAL',ldr_state='LIGHT')
+        self.post()
+        repaired = self.client.get('/api/state').json['physical_nodes'][0]
+        self.assertEqual(repaired['current_alert'],'NORMAL')
+        self.assertEqual(repaired['ldr_state'],'LIGHT')
+        self.assertNotIn('1',self.client.get('/api/state').json['active_failures'])
+        self.assertTrue(all(r['source']=='physical' for r in self.client.get('/api/history').json['data']))
+
     def test_legacy_migration(self):
         from event_store import EventStore
         path = self.tmp.name + '/legacy.db'

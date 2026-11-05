@@ -180,6 +180,35 @@
   ::-webkit-scrollbar { width:5px; }
   ::-webkit-scrollbar-track { background:transparent; }
   ::-webkit-scrollbar-thumb { background:var(--border2); border-radius:3px; }
+
+  /* Physical telemetry shares the existing state poll and theme. */
+  .physical-panel { margin:18px 22px 0; }
+  .physical-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .physical-card { min-width:0; border:1px solid var(--border2); border-left:4px solid var(--physical-color); border-radius:var(--radius); background:var(--bg3); padding:12px; }
+  .physical-heading { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:9px; }
+  .physical-heading strong { flex:1; overflow-wrap:anywhere; }
+  .physical-communication { font-size:10px; font-weight:700; color:var(--physical-color); }
+  .physical-details { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:5px 12px; font-size:11px; line-height:1.5; }
+  .physical-details dt { color:var(--text2); }
+  .physical-details dd { margin:0; overflow-wrap:anywhere; }
+  .physical-alert { color:var(--physical-color); font-weight:700; }
+  .physical-note { color:var(--text2); font-size:11px; margin-top:9px; line-height:1.5; }
+  #physical-message { color:var(--amber); min-height:16px; margin-top:6px; font-size:11px; }
+  #node-tooltip { position:fixed; max-width:calc(100vw - 16px); z-index:20; }
+  .admin-main,.admin-side,.sim-main,.sim-side { min-width:0; }
+  @media(max-width:850px) {
+    #page-admin,#page-sim { grid-template-columns:minmax(0,1fr); }
+    .topbar { height:auto; min-height:50px; flex-wrap:wrap; padding:0 12px; gap:4px; }
+    .topbar-logo { margin-right:8px; }
+    .tab { padding:0 9px; font-size:10px; }
+    .topbar-right { padding:8px 0; }
+    .page { padding:12px; }
+    .physical-panel { margin:12px 12px 0; }
+    .physical-grid { grid-template-columns:minmax(0,1fr); }
+    .stat-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .table-wrap { overflow:auto; }
+    .panel-header { flex-wrap:wrap; }
+  }
 </style>
 </head>
 <body>
@@ -210,6 +239,13 @@
     <span id="clock">--:--:--</span>
   </div>
 </header>
+
+<section class="panel physical-panel" aria-labelledby="physical-title">
+  <div class="panel-header"><h2 class="panel-title" id="physical-title">NODOS FÍSICOS</h2><span class="panel-badge">◎ Dispositivo físico</span></div>
+  <div id="physical-cards" class="physical-grid"></div>
+  <p id="physical-poll-status" class="physical-note" role="status">Consultando dispositivos…</p>
+  <p id="physical-message" role="status" aria-live="polite"></p>
+</section>
 
 <main id="page-admin" class="page active">
   <div class="admin-main">
@@ -382,11 +418,12 @@
             <th>ID de Nodo</th>
             <th>Región / Zona</th>
             <th>Estado en BD</th>
+            <th>Origen</th>
             <th>Mensaje / Diagnóstico</th>
           </tr>
         </thead>
         <tbody id="history-tbody">
-          <tr><td colspan="5" style="text-align:center;color:var(--text3);padding:40px;font-size:13px;">Haz clic en "Actualizar Datos" para descargar los últimos 200 registros de la nube.</td></tr>
+          <tr><td colspan="6" style="text-align:center;color:var(--text3);padding:40px;font-size:13px;">Haz clic en "Actualizar Datos" para descargar los últimos 200 registros de la nube.</td></tr>
         </tbody>
       </table>
     </div>
@@ -397,6 +434,10 @@
 // ══════════════════════════════
 // STATE
 // ══════════════════════════════
+let physicalNodes = new Map();
+let physicalStateReady = false;
+let physicalPollFailed = false;
+let stateRequestPending = false;
 let topology   = {};
 let superNodes = [];
 let activeFailures = {};
@@ -438,6 +479,70 @@ const PING_COLORS = {
 // ══════════════════════════════
 // INIT
 // ══════════════════════════════
+function textElement(tag, text, className='') {
+  const element = document.createElement(tag);
+  element.textContent = String(text ?? '');
+  if (className) element.className = className;
+  return element;
+}
+
+function physicalNode(id) { return physicalNodes.get(Number(id)); }
+function simulatorMayControl(id) { return physicalStateReady && !physicalNode(id); }
+function physicalNotice() {
+  document.getElementById('physical-message').textContent = 'Este nodo es administrado por el dispositivo físico';
+}
+function relativeSeen(value) {
+  if (!value) return 'Nunca';
+  const stamp = Date.parse(value);
+  if (!Number.isFinite(stamp)) return 'Fecha no disponible';
+  const seconds = Math.max(0, Math.floor((Date.now()-stamp)/1000));
+  if (seconds < 60) return `hace ${seconds} s`;
+  if (seconds < 3600) return `hace ${Math.floor(seconds/60)} min`;
+  if (seconds < 86400) return `hace ${Math.floor(seconds/3600)} h`;
+  return `hace ${Math.floor(seconds/86400)} días`;
+}
+function physicalAppearance(node) {
+  if (physicalPollFailed) return {color:'#8b6bbf', communication:'SIN COMUNICACIÓN'};
+  if (node.status === 'no_data' || !node.last_seen) return {color:'#929bad', communication:'SIN DATOS'};
+  const stamp = Date.parse(node.last_seen);
+  const online = node.online === true && Number.isFinite(stamp) && Date.now()-stamp <= 30000;
+  if (!online) return {color:'#8b6bbf', communication:'SIN COMUNICACIÓN'};
+  const color = node.current_alert === 'APAGADA_CRITICA' ? '#c0504a' : node.current_alert === 'PARPADEO_LDR' ? '#c98a3a' : '#34956b';
+  return {color, communication:'CONECTADO'};
+}
+function renderPhysicalNodes() {
+  const grid = document.getElementById('physical-cards');
+  grid.replaceChildren();
+  if (!physicalNodes.size) grid.append(textElement('p', physicalStateReady ? 'No hay nodos físicos registrados.' : 'Esperando información de dispositivos.', 'physical-note'));
+  for (const node of physicalNodes.values()) {
+    const appearance = physicalAppearance(node);
+    const card = textElement('article', '', 'physical-card');
+    card.dataset.nodeId = node.node_id;
+    card.style.setProperty('--physical-color', appearance.color);
+    const heading = textElement('div', '', 'physical-heading');
+    heading.append(textElement('strong', `${node.label || 'Dispositivo'} · #${node.node_id}`), textElement('span', appearance.communication, 'physical-communication'));
+    const details = document.createElement('dl');
+    details.className = 'physical-details';
+    const fields = [['MAC', node.node_mac || 'Sin MAC'], ['Sensor', node.current_alert || 'Sin datos'], ['Lectura', node.ldr_state || 'Sin lectura'], ['Última comunicación', relativeSeen(node.last_seen)], ['Zona', topology[node.node_id]?.zone || 'Zona no disponible']];
+    for (const [label, value] of fields) details.append(textElement('dt', label), textElement('dd', value, label === 'Sensor' ? 'physical-alert' : ''));
+    card.append(heading, details);
+    grid.append(card);
+  }
+  document.getElementById('physical-poll-status').textContent = physicalPollFailed ? 'No se pudo consultar el estado. Se conservan las últimas lecturas; reintentando…' : '◎ Anillo en el mapa: nodo físico. Estado recibido del dispositivo.';
+}
+function nearestPhysical(e, canvas, role) {
+  const rect = canvas.getBoundingClientRect();
+  let nearest = null, distance = 16;
+  for (const node of physicalNodes.values()) {
+    const point = topology[node.node_id];
+    if (!point) continue;
+    const [x,y] = worldToScreen(point.x,point.y,canvas,VIEW[role]);
+    const d = Math.hypot(x-(e.clientX-rect.left)*canvas.width/rect.width,y-(e.clientY-rect.top)*canvas.height/rect.height);
+    if (d < distance) { nearest = node.node_id; distance = d; }
+  }
+  return nearest;
+}
+
 async function init() {
   updateClock();
   setInterval(updateClock, 1000);
@@ -460,6 +565,8 @@ async function init() {
   setInterval(fireRegionalHeartbeats, 4000);
   setTimeout(fireRegionalHeartbeats, 1200);
 
+  document.body.appendChild(document.getElementById('node-tooltip'));
+  await fetchState();
   setInterval(fetchState, 1000);
 }
 
@@ -512,11 +619,14 @@ function setupCanvas(canvas, role) {
       v.oy += e.clientY - v.lastY;
       v.lastX = e.clientX; v.lastY = e.clientY;
     }
+    showTooltip(e, canvas, role);
     if (role === 'sim') {
       if (isDrawing && !v.dragging) handleSimInteract(e, canvas);
-      showTooltip(e, canvas);
+
     }
   });
+  canvas.addEventListener('click', e => { if (nearestPhysical(e,canvas,role) !== null) showTooltip(e,canvas,role); });
+  canvas.addEventListener('mouseleave', () => { document.getElementById('node-tooltip').style.display='none'; });
   canvas.addEventListener('mouseup',    () => { v.dragging = false; if(role==='sim') isDrawing=false; });
   canvas.addEventListener('mouseleave', () => { v.dragging = false; if(role==='sim'){ isDrawing=false; document.getElementById('node-tooltip').style.display='none'; } });
 
@@ -605,6 +715,20 @@ function drawCanvas(canvas, role) {
       ctx.fill();
     }
     ctx.globalAlpha = 1;
+  }
+
+  for (const physical of physicalNodes.values()) {
+    const node = topology[physical.node_id];
+    if (!node) continue;
+    const [x,y] = worldToScreen(node.x,node.y,canvas,v);
+    const appearance = physicalAppearance(physical);
+    ctx.globalAlpha = 1;
+    ctx.beginPath(); ctx.arc(x,y,9,0,2*Math.PI);
+    ctx.strokeStyle = appearance.color; ctx.lineWidth = 2; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,5,0,2*Math.PI);
+    ctx.fillStyle = appearance.color; ctx.fill();
+    ctx.font = 'bold 11px Consolas,monospace';
+    ctx.fillText('F'+physical.node_id,x+12,y-9);
   }
 
   for (const p of pings) {
@@ -718,12 +842,18 @@ function fireRepairPing(nodeId) {
 // FETCH STATE (API)
 // ══════════════════════════════
 async function fetchState() {
+  if (stateRequestPending) return;
+  stateRequestPending = true;
   try {
     const res = await fetch('/api/state');
     if (!res.ok) throw new Error("Servidor Central Caído");
     const data = await res.json();
 
     zoneStatus = data.zone_status || {};
+    physicalPollFailed = false;
+    physicalStateReady = true;
+    physicalNodes = new Map((Array.isArray(data.physical_nodes) ? data.physical_nodes : []).filter(n => Number.isInteger(n.node_id)).map(n => [n.node_id,n]));
+    renderPhysicalNodes();
 
     // Sincronización Estricta de la BD en memoria (Backend)
     const serverFails = data.active_failures;
@@ -744,8 +874,10 @@ async function fetchState() {
   } catch(e) {
     // Si el fetch falla, el Master entero está offline
     Object.keys(ZONE_COLORS).forEach(z => zoneStatus[z] = 'offline');
+    physicalPollFailed = true;
+    renderPhysicalNodes();
     updateZoneList();
-  }
+  } finally { stateRequestPending = false; }
 }
 
 // ══════════════════════════════
@@ -753,45 +885,35 @@ async function fetchState() {
 // ══════════════════════════════
 async function fetchDBHistory() {
   const tbody = document.getElementById('history-tbody');
-  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text2);padding:40px;">Cargando historial local... <span class="status-dot" style="display:inline-block;margin-left:5px;"></span></td></tr>';
+  const message = text => {
+    const row = document.createElement('tr');
+    const cell = textElement('td', text);
+    cell.colSpan = 6; row.append(cell); tbody.replaceChildren(row);
+  };
+  message('Cargando historial local…');
   try {
     const res = await fetch('/api/history');
+    if (!res.ok) throw new Error('history unavailable');
     const json = await res.json();
-
-    if(json.error) {
-       tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--red);padding:40px;">Error: ${json.error}</td></tr>`;
-       return;
+    if (json.error) { message('No se pudo consultar el historial.'); return; }
+    if (!Array.isArray(json.data) || !json.data.length) { message('Todavía no hay eventos registrados.'); return; }
+    tbody.replaceChildren();
+    for (const record of json.data) {
+      const row = document.createElement('tr');
+      const date = new Date(record.timestamp);
+      const stamp = Number.isFinite(date.getTime()) ? date.toLocaleString('es-MX', {timeZone:'UTC'}) : record.timestamp;
+      const source = record.source === 'physical' ? 'FÍSICO' : record.source === 'simulated' ? 'SIMULADO' : 'LEGACY';
+      const statusCell = document.createElement('td');
+      statusCell.append(textElement('span', record.status || 'UNKNOWN', 'status-badge '+(record.status === 'CRITICAL_FAIL' ? 'fail' : 'repair')));
+      row.append(textElement('td',stamp),textElement('td','#'+record.node_id),textElement('td',record.zone),statusCell,textElement('td',source),textElement('td',record.message));
+      tbody.append(row);
     }
-    if(!json.data || json.data.length === 0) {
-       tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:40px;">Todavía no hay eventos registrados.</td></tr>';
-       return;
-    }
-
-    tbody.innerHTML = json.data.map(r => {
-       const isFail = r.status === 'CRITICAL_FAIL';
-       let timeStr = r.timestamp;
-       try {
-           const d = new Date(r.timestamp);
-           if(!isNaN(d)) timeStr = d.toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'medium' });
-       } catch(e) {}
-
-       return `<tr>
-         <td style="color:var(--text2)">${timeStr}</td>
-         <td style="font-weight:600; color:var(--text)">#${r.node_id || '-'}</td>
-         <td>${r.zone || '-'}</td>
-         <td><span class="status-badge ${isFail?'fail':'repair'}">${r.status || 'UNKNOWN'}</span></td>
-         <td style="color:${isFail?'var(--red)':'var(--accent)'}">${r.message || '-'}</td>
-       </tr>`;
-    }).join('');
-  } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--red);padding:40px;">No se pudo consultar el historial local.</td></tr>`;
-  }
+  } catch(e) { message('No se pudo consultar el historial local.'); }
 }
 
-// ══════════════════════════════
-// FAILURE LOGIC
-// ══════════════════════════════
 function applyFail(nodeId, type, silent) {
+  if (physicalNode(nodeId)) { physicalNotice(); return; }
+  if (!physicalStateReady) return;
   if (activeFailures.hasOwnProperty(nodeId)) return;
   activeFailures[nodeId] = type;
   failTypeCounts[type] = (failTypeCounts[type]||0)+1;
@@ -802,6 +924,8 @@ function applyFail(nodeId, type, silent) {
 }
 
 function applyRepair(nodeId) {
+  if (physicalNode(nodeId)) { physicalNotice(); return; }
+  if (!physicalStateReady) return;
   if (!activeFailures.hasOwnProperty(nodeId)) return;
   const type = activeFailures[nodeId];
   delete activeFailures[nodeId];
@@ -813,6 +937,8 @@ function applyRepair(nodeId) {
 }
 
 async function sendControlEvent(nodeId, action, detail=null) {
+  if (physicalNode(nodeId)) { physicalNotice(); return; }
+  if (!physicalStateReady) return;
   try {
     await fetch('/api/control', {
         method:'POST',
@@ -826,6 +952,7 @@ async function sendControlEvent(nodeId, action, detail=null) {
 // SIM INTERACTIONS
 // ══════════════════════════════
 function handleSimInteract(e, canvas) {
+  if (nearestPhysical(e,canvas,'sim') !== null) { physicalNotice(); return; }
   const v    = VIEW.sim;
   const rect = canvas.getBoundingClientRect();
   const sx   = (e.clientX - rect.left) * (canvas.width  / rect.width);
@@ -847,8 +974,8 @@ function handleSimInteract(e, canvas) {
   }
 }
 
-function showTooltip(e, canvas) {
-  const v    = VIEW.sim;
+function showTooltip(e, canvas, role='sim') {
+  const v    = VIEW[role];
   const rect = canvas.getBoundingClientRect();
   const sx   = (e.clientX - rect.left) * (canvas.width  / rect.width);
   const sy   = (e.clientY - rect.top)  * (canvas.height / rect.height);
@@ -858,6 +985,8 @@ function showTooltip(e, canvas) {
     const dist = Math.hypot(topology[id].x - wx, topology[id].y - wy);
     if (dist < minDist) { minDist = dist; nearest = parseInt(id); }
   }
+  const physicalHit = nearestPhysical(e,canvas,role);
+  if (physicalHit !== null) nearest = physicalHit;
   const tip = document.getElementById('node-tooltip');
   if (nearest !== null) {
     const node = topology[nearest];
@@ -867,9 +996,16 @@ function showTooltip(e, canvas) {
     document.getElementById('tt-status').textContent = isFail ? `⚠ ${activeFailures[nearest]}` : '✓ Operativo';
     document.getElementById('tt-status').className   = 'tooltip-status '+(isFail?'fail':'ok');
     document.getElementById('tt-hint').textContent   = isFail ? (currentMode==='repair'?'Clic para reparar':'') : (currentMode==='fail'?'Clic para aplicar fallo':'');
+    const physical = physicalNode(nearest);
+    if (physical) {
+      document.getElementById('tt-id').textContent = `Nodo físico #${nearest}`;
+      document.getElementById('tt-status').textContent = `${physical.current_alert || 'Sin datos'} · ${physicalAppearance(physical).communication}`;
+      document.getElementById('tt-status').style.color = physicalAppearance(physical).color;
+      document.getElementById('tt-hint').textContent = `Última comunicación: ${relativeSeen(physical.last_seen)}`;
+    } else document.getElementById('tt-status').style.color = '';
     tip.style.display = 'block';
-    tip.style.left    = (e.clientX - rect.left + 14)+'px';
-    tip.style.top     = (e.clientY - rect.top  - 12)+'px';
+    tip.style.left = Math.max(8,Math.min(e.clientX+14,window.innerWidth-tip.offsetWidth-8))+'px';
+    tip.style.top = Math.max(8,Math.min(e.clientY+14,window.innerHeight-tip.offsetHeight-8))+'px';
   } else {
     tip.style.display = 'none';
   }
@@ -914,15 +1050,11 @@ function updateZoneList() {
     const d = document.createElement('div');
     d.className = 'zone-item';
 
-    if (status === 'offline') {
-        d.innerHTML = `<div class="zone-dot" style="background:#444"></div>
-                       <div class="zone-name" style="color:#666; text-decoration:line-through;">${zone.replace(' (Master)','')}</div>
-                       <div class="zone-count" style="color:var(--red); font-size:10px;">🔌 OFFLINE</div>`;
-    } else {
-        d.innerHTML = `<div class="zone-dot" style="background:${color}"></div>
-                       <div class="zone-name">${zone.replace(' (Master)','')}</div>
-                       <div class="zone-count ${f>0?'zone-fail':'zone-ok'}">${f>0?f+' caídos':'OK'} <span style="color:var(--text3);font-weight:400;font-size:9px;">/ ${t}</span></div>`;
-    }
+    const dot = textElement('div','','zone-dot');
+    dot.style.background = status === 'offline' ? '#697386' : color;
+    const name = textElement('div',zone.replace(' (Master)',''),'zone-name');
+    const count = textElement('div',status === 'offline' ? 'OFFLINE' : `${f ? f+' caídos' : 'OK'} / ${t}`,'zone-count '+(f ? 'zone-fail' : 'zone-ok'));
+    d.append(dot,name,count);
     ul.appendChild(d);
   }
 
@@ -938,14 +1070,19 @@ function updateZoneList() {
 }
 
 function renderAdminLog(logs) {
-  if (!logs||!logs.length) return;
-  document.getElementById('log-badge').textContent = `${logs.length} registros`;
-  document.getElementById('admin-log').innerHTML = logs.map(log => {
-    const isRepair = log.includes('REPARACIÓN');
+  const wrap = document.getElementById('admin-log');
+  wrap.replaceChildren();
+  const items = Array.isArray(logs) ? logs : [];
+  document.getElementById('log-badge').textContent = `${items.length} registros`;
+  if (!items.length) { wrap.append(textElement('div','Sin eventos aún.','log-empty')); return; }
+  for (const raw of items) {
+    const log = String(raw);
+    const repair = log.includes('REPARACIÓN');
     const parts = log.match(/\[(\d+:\d+:\d+)\] (.+)/);
-    const time = parts?parts[1]:'', msg = parts?parts[2]:log;
-    return `<div class="log-entry ${isRepair?'log-repair':'log-fail'}"><span class="log-time">${time}</span><span>${isRepair?'✓':'✗'}</span><span class="log-msg">${msg}</span></div>`;
-  }).join('');
+    const row = textElement('div','','log-entry '+(repair ? 'log-repair' : 'log-fail'));
+    row.append(textElement('span',parts ? parts[1] : '', 'log-time'), textElement('span', log.includes('[physical]') ? 'FÍSICO' : 'SIMULADO'), textElement('span',parts ? parts[2] : log,'log-msg'));
+    wrap.append(row);
+  }
 }
 
 function updateTypeChart() {
@@ -980,17 +1117,22 @@ function addSimLog(type, nodeId, failType) {
 }
 function renderSimLog() {
   const wrap = document.getElementById('sim-log');
-  if (!simLogs.length) { wrap.innerHTML='<div class="log-empty">Sin eventos.</div>'; return; }
-  wrap.innerHTML = simLogs.map(l=>`<div class="log-entry ${l.type==='repair'?'log-repair':'log-fail'}"><span class="log-time">${l.time}</span><span class="log-msg">${l.msg}</span></div>`).join('');
+  wrap.replaceChildren();
+  if (!simLogs.length) { wrap.append(textElement('div','Sin eventos.','log-empty')); return; }
+  for (const log of simLogs) {
+    const row = textElement('div','','log-entry '+(log.type === 'repair' ? 'log-repair' : 'log-fail'));
+    row.append(textElement('span',log.time,'log-time'),textElement('span','SIMULADO'),textElement('span',log.msg,'log-msg'));
+    wrap.append(row);
+  }
 }
 function clearSimLog() { simLogs=[]; renderSimLog(); }
 
 // ══════════════════════════════
 // QUICK ACTIONS
 // ══════════════════════════════
-function repairAll() { Object.keys(activeFailures).map(Number).forEach(id => applyRepair(id)); }
+function repairAll() { Object.keys(activeFailures).map(Number).filter(simulatorMayControl).forEach(id => applyRepair(id)); }
 function triggerRandomFail() {
-  const all   = Object.keys(topology).map(Number).filter(id=>!activeFailures.hasOwnProperty(id));
+  const all   = Object.keys(topology).map(Number).filter(id=>simulatorMayControl(id) && !activeFailures.hasOwnProperty(id));
   const types = ['PARPADEO_LDR','APAGADA_CRITICA','NO_ENCENDIO_RELE'];
   all.sort(()=>Math.random()-0.5).slice(0,5).forEach(id => applyFail(id, types[Math.floor(Math.random()*3)], false));
 }

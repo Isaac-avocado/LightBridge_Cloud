@@ -114,10 +114,9 @@ SQLite migra automaticamente sin borrar historial. Eventos anteriores: legacy;
 controles virtuales: simulated; transiciones fisicas: physical. Los reportes
 normales y fallos repetidos se conservan en physical_events sin inundar el
 historial comun. El estado fisico se reconstruye al iniciar. Los nodos fisicos
-estan reservados en el backend: controles y reparaciones masivas del dashboard
-no pueden alterarlos, aunque la interfaz todavia no los distingue visualmente.
-No se han cambiado los botones ni sus actualizaciones optimistas del navegador;
-el siguiente sondeo recupera el estado autorizado por el servidor.
+estan reservados en el backend y en los controles del dashboard: los eventos
+fisicos solo cambian con los reportes recibidos del dispositivo. La seccion
+"Dashboard: nodos físicos" describe la visualizacion y los estados de conexion.
 
 Pruebas sin hardware (base temporal, sin volumen de produccion):
 
@@ -128,3 +127,23 @@ python -m unittest discover -s tests -v
 Con las dependencias disponibles tambien en Docker, montar el proyecto en
 `/app`, ejecutar ese mismo comando y no montar el volumen de datos real.
 No ejecutar `docker compose down -v`: eliminaria el historial persistente.
+
+
+## Dashboard: nodos físicos
+
+La sección NODOS FÍSICOS muestra los dispositivos registrados, su MAC, zona,
+sensor, lectura y última comunicación. Se actualiza con el sondeo existente de
+`/api/state`. Sin reportes aparece SIN DATOS; después de 30 segundos sin una
+recepción nueva aparece SIN COMUNICACIÓN. Una desconexión conserva la última
+lectura y no significa automáticamente que la luminaria esté apagada.
+
+Los mapas conservan los colores de zona para los nodos simulados. Los físicos
+llevan anillo, centro mayor e identificadores F1/F25 (según el node_id configurado):
+verde normal, rojo apagada crítica, naranja parpadeo, gris sin datos y morado sin
+comunicación. Al pasar el cursor o tocar el nodo se muestra su información.
+Las tarjetas se apilan en móvil y respetan los temas claro y oscuro.
+
+Los controles individuales, Fallo aleatorio y Reparar todos solo modifican nodos
+simulados. Los físicos dependen exclusivamente del estado recibido del backend.
+El historial distingue FÍSICO, SIMULADO y LEGACY. Si falla la consulta, se conserva
+la última lectura con un aviso de pérdida de comunicación hasta recuperarla.
