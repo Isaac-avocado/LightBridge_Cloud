@@ -7,3 +7,4 @@ data/
 .pytest_cache/
 .vscode/
 !.env.example
+firmware/**/config.h
